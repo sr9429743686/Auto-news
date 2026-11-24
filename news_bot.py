@@ -4,9 +4,11 @@ import json
 import time
 import hashlib
 import textwrap
+import subprocess
+import difflib
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from email.utils import parsedate_to_datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -20,11 +22,14 @@ CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "").strip()
 REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN", "").strip()
 BLOG_ID = os.environ.get("BLOG_ID", "6996150531679127159").strip()
 
-# એક કરતા વધુ Gemini Key કોમા (,) થી અલગ કરીને GitHub Secret 'GEMINI_API_KEYS' માં મૂકવી
-RAW_GEMINI_KEYS = os.environ.get("GEMINI_API_KEYS", os.environ.get("GEMINI_API_KEY", ""))
-GEMINI_KEYS = [k.strip() for k in RAW_GEMINI_KEYS.split(",") if k.strip()]
+# GEMINI_API_KEYS અથવા GEMINI_API_KEY બંનેમાંથી Key લઈ લેશે (કોમા કે નવી લાઈન બંને ચાલશે)
+RAW_GEMINI_KEYS = (
+    os.environ.get("GEMINI_API_KEYS", "") + "," + os.environ.get("GEMINI_API_KEY", "")
+)
+GEMINI_KEYS = [
+    k.strip() for k in re.split(r"[\s,;]+", RAW_GEMINI_KEYS) if len(k.strip()) > 10
+]
 
-# મોડેલ લિસ્ટ (પહેલા તમારું પસંદગીનું મોડેલ ટ્રાય થશે, ન ચાલે તો ઓટો-ફોલબેક)
 PRIMARY_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
 MODEL_FALLBACKS = list(dict.fromkeys([
     PRIMARY_MODEL,
@@ -33,15 +38,22 @@ MODEL_FALLBACKS = list(dict.fromkeys([
     "gemini-2.0-flash-lite"
 ]))
 
-# દર વખતે કેટલી પોસ્ટ કરવી (દિવસમાં 7-8 વખત રન થાય તો ~20 પોસ્ટ/દિવસ)
 MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN", "3"))
 DAILY_MAX_POSTS = int(os.environ.get("DAILY_MAX_POSTS", "20"))
+MAX_ARTICLE_AGE_HOURS = int(os.environ.get("MAX_ARTICLE_AGE_HOURS", "36"))
 
-# GitHub Repo info (થમ્બનેલને ફ્રી અને કાયમી CDN URL આપવા માટે)
-GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()  # e.g. username/repo
+GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main").strip()
 
-AUTHOR_IMAGE_PATH = "author.jpg"
+# તમે મોકલેલો ફોટો આમાંથી કોઈ પણ નામે અપલોડ હશે તો ઓટોમેટિક મળી જશે
+AUTHOR_IMAGE_CANDIDATES = [
+    "author.png",
+    "1001185905.png",
+    "author.jpg",
+    "author.jpeg",
+    "1001181954.jpg"
+]
+
 THUMBNAIL_DIR = "thumbnails"
 HISTORY_FILE = "posted_urls.json"
 
@@ -50,21 +62,20 @@ HEADERS = {
     "Accept-Language": "en-IN,en;q=0.9"
 }
 
-# 7 વેબસાઈટ્સના પબ્લિક RSS ફીડ્સ (પેવોલ વગરના તાજા સમાચાર માટે)
+# બધી 7 વેબસાઈટ્સના તાજા પબ્લિક RSS ફીડ્સ
 NEWS_FEEDS = [
-    ("Zee Business", "https://www.zeebiz.com/india-markets.xml"),
-    ("Zee Business", "https://www.zeebiz.com/latest.xml"),
-    ("NDTV Business", "https://feeds.feedburner.com/ndtvprofit-latest"),
     ("Moneycontrol", "https://www.moneycontrol.com/rss/latestnews.xml"),
-    ("Moneycontrol Markets", "https://www.moneycontrol.com/rss/marketreports.xml"),
-    ("Economic Times Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
     ("LiveMint", "https://www.livemint.com/rss/markets"),
-    ("LiveMint News", "https://www.livemint.com/rss/news"),
+    ("Economic Times", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
+    ("NDTV Business", "https://feeds.feedburner.com/ndtvprofit-latest"),
     ("Business Standard", "https://www.business-standard.com/rss/markets-106.rss"),
+    ("Zee Business", "https://www.zeebiz.com/india-markets.xml"),
     ("NYTimes Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
+    ("Moneycontrol Markets", "https://www.moneycontrol.com/rss/marketreports.xml"),
+    ("LiveMint News", "https://www.livemint.com/rss/news"),
 ]
 
-# ભારતની મુખ્ય ભાષાઓ (દરેક પોસ્ટ આ બધી ભાષામાં બન્યા પછી જ પબ્લિશ થશે)
+# ભારતની મુખ્ય ભાષાઓ (બધી ભાષા તૈયાર થયા પછી જ પોસ્ટ પબ્લિશ થશે)
 TARGET_LANGUAGES = [
     ("gu", "ગુજરાતી", "Gujarati"),
     ("hi", "हिन्दी", "Hindi"),
@@ -83,6 +94,15 @@ PAYWALL_HINTS = [
     "for unlimited access", "create a free account to continue"
 ]
 
+# દરેક પોસ્ટના થમ્બનેલ માટે અલગ-અલગ પ્રીમિયમ કલર થીમ
+THUMB_THEMES = [
+    {"bg1": (8, 22, 48), "bg2": (24, 58, 100), "accent": (245, 158, 11), "badge": (220, 38, 38), "bar": (15, 118, 110)},
+    {"bg1": (15, 23, 42), "bg2": (49, 46, 129), "accent": (56, 189, 248), "badge": (234, 88, 12), "bar": (30, 64, 175)},
+    {"bg1": (6, 40, 38), "bg2": (17, 94, 89), "accent": (250, 204, 21), "badge": (185, 28, 28), "bar": (15, 23, 42)},
+    {"bg1": (30, 14, 38), "bg2": (88, 28, 135), "accent": (251, 191, 36), "badge": (219, 39, 119), "bar": (17, 24, 39)},
+    {"bg1": (36, 16, 16), "bg2": (127, 29, 29), "accent": (253, 224, 71), "badge": (15, 118, 110), "bar": (15, 23, 42)},
+]
+
 key_index = 0
 
 
@@ -97,14 +117,19 @@ def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                data.setdefault("posted_urls", [])
+                data.setdefault("posted_titles", [])
+                data.setdefault("daily_counts", {})
+                return data
         except Exception:
             pass
-    return {"posted_urls": [], "daily_counts": {}}
+    return {"posted_urls": [], "posted_titles": [], "daily_counts": {}}
 
 
 def save_history(history):
-    history["posted_urls"] = history["posted_urls"][-1000:]
+    history["posted_urls"] = history["posted_urls"][-1500:]
+    history["posted_titles"] = history["posted_titles"][-500:]
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
@@ -116,24 +141,81 @@ def clean_html_text(raw):
     return " ".join(soup.get_text(" ", strip=True).split())
 
 
+def normalize_title(title):
+    return re.sub(r"[^a-z0-9\s]", "", title.lower()).strip()
+
+
+def is_similar_topic(new_title, existing_titles):
+    """બે અલગ વેબસાઈટ પર એક જ ન્યૂઝ હોય તો તેને ડુપ્લીકેટ ગણીને સ્કિપ કરે છે."""
+    n1 = normalize_title(new_title)
+    w1 = {w for w in n1.split() if len(w) > 3}
+    for old_t in existing_titles:
+        n2 = normalize_title(old_t)
+        if not n2:
+            continue
+        if difflib.SequenceMatcher(None, n1, n2).ratio() >= 0.62:
+            return True
+        w2 = {w for w in n2.split() if len(w) > 3}
+        if w1 and w2:
+            overlap = len(w1 & w2) / max(1, min(len(w1), len(w2)))
+            if overlap >= 0.65:
+                return True
+    return False
+
+
+def is_fresh_article(pub_date_str, title):
+    """માત્ર છેલ્લા 36 કલાકના તાજા સમાચાર જ પસંદ કરે છે (જૂના વર્ષના આર્ટિકલ બ્લોક)."""
+    # ટાઈટલમાં જૂનું વર્ષ (2021-2025 કે '22/'23/'24) હોય તો તરત સ્કિપ
+    if re.search(r"('\s?2[0-5]\b|\b202[0-4]\b)", title):
+        return False
+    if not pub_date_str:
+        return False
+    try:
+        dt = parsedate_to_datetime(pub_date_str.strip())
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        age_hours = (now_utc - dt.astimezone(timezone.utc)).total_seconds() / 3600.0
+        return -2.0 <= age_hours <= MAX_ARTICLE_AGE_HOURS
+    except Exception:
+        return False
+
+
+def find_copied_phrases(source_text, draft_text, ngram_size=6):
+    """મૂળ આર્ટિકલની કોઈ 6+ શબ્દોની લાઈન કોપી થઈ હોય તો પકડી પાડે છે."""
+    src_words = re.findall(r"[a-z0-9]+", source_text.lower())
+    drf_words = re.findall(r"[a-z0-9]+", draft_text.lower())
+    if len(src_words) < ngram_size or len(drf_words) < ngram_size:
+        return []
+
+    src_ngrams = {
+        " ".join(src_words[i:i + ngram_size])
+        for i in range(len(src_words) - ngram_size + 1)
+    }
+    matches = []
+    for i in range(len(drf_words) - ngram_size + 1):
+        gram = " ".join(drf_words[i:i + ngram_size])
+        if gram in src_ngrams and gram not in matches:
+            matches.append(gram)
+            if len(matches) >= 8:
+                break
+    return matches
+
+
 # ==========================================
-# 3. PUBLIC NEWS FETCHING (FULL FREE ARTICLES)
+# 3. FRESH & DIVERSE NEWS FETCHING (ROUND-ROBIN)
 # ==========================================
 def extract_full_public_article(url):
-    """પબ્લિક ફ્રી આર્ટિકલનો પૂરો ટેક્સ્ટ લાવે છે; પેવોલ/અધૂરો આર્ટિકલ સ્કિપ કરે છે."""
     try:
         res = requests.get(url, headers=HEADERS, timeout=15)
         if res.status_code != 200:
             return None
 
         soup = BeautifulSoup(res.content, "html.parser")
-
-        # બિનજરૂરી ટેગ્સ હટાવો
         for tag in soup.find_all(["script", "style", "nav", "footer", "aside", "form", "noscript", "iframe"]):
             tag.decompose()
 
         body_text_low = soup.get_text(" ", strip=True).lower()
-        # પેવોલ વાળા અધૂરા લેખ સ્કિપ કરો
         container = (
             soup.find("article")
             or soup.find("div", class_=re.compile(r"(arttext|article-body|story-content|content_wrapper|main-content|story_details)", re.I))
@@ -152,8 +234,6 @@ def extract_full_public_article(url):
                 paragraphs.append(txt)
 
         full_text = "\n\n".join(paragraphs)
-
-        # જો ટેક્સ્ટ બહુ નાનો હોય અથવા પેવોલ નોટિસ હોય તો સ્કિપ કરો
         if len(full_text) < 450:
             return None
         if any(p_hint in body_text_low for p_hint in PAYWALL_HINTS) and len(full_text) < 900:
@@ -164,48 +244,67 @@ def extract_full_public_article(url):
         return None
 
 
-def fetch_candidate_articles(posted_urls):
-    candidates = []
-    seen = set(posted_urls)
+def fetch_fresh_diverse_articles(history):
+    """બધી 7 સાઇટ્સમાંથી વારાફરતી માત્ર આજના તાજા અને અલગ-અલગ ન્યૂઝ લાવે છે."""
+    posted_urls = set(history["posted_urls"])
+    known_titles = list(history["posted_titles"])
+    per_source_buckets = []
 
     for source_name, feed_url in NEWS_FEEDS:
+        bucket = []
         try:
             res = requests.get(feed_url, headers=HEADERS, timeout=12)
             if res.status_code != 200:
                 continue
             root = ET.fromstring(res.content)
-            items = root.findall(".//item")[:6]
+            items = root.findall(".//item")[:10]
 
             for item in items:
                 title = clean_html_text(item.findtext("title"))
                 link = (item.findtext("link") or "").strip()
-                desc = clean_html_text(item.findtext("description"))
+                pub_date = (item.findtext("pubDate") or "").strip()
 
-                if not title or not link or link in seen:
+                if not title or not link or link in posted_urls:
                     continue
                 if "/prime/" in link.lower():
-                    continue  # પેઇડ સેક્શન સ્કિપ
+                    continue
+                if not is_fresh_article(pub_date, title):
+                    continue
+                if is_similar_topic(title, known_titles):
+                    continue
 
-                seen.add(link)
                 full_text = extract_full_public_article(link)
                 if not full_text:
                     continue
 
-                candidates.append({
+                posted_urls.add(link)
+                known_titles.append(title)
+                bucket.append({
                     "source": source_name,
                     "title": title,
                     "url": link,
-                    "summary": desc,
+                    "pub_date": pub_date,
                     "full_text": full_text
                 })
-
-                if len(candidates) >= MAX_POSTS_PER_RUN * 3:
-                    return candidates
+                # દરેક સાઇટમાંથી મહત્તમ 2 તાજા ન્યૂઝ જેથી બધી સાઇટનું મિશ્રણ મળે
+                if len(bucket) >= 2:
+                    break
         except Exception as e:
             print(f"[Feed Skip] {source_name}: {e}")
             continue
 
-    return candidates
+        if bucket:
+            per_source_buckets.append(bucket)
+
+    # Round-Robin: 1-1 ન્યૂઝ દરેક સાઇટમાંથી વારાફરતી ગોઠવો
+    candidates = []
+    max_depth = max((len(b) for b in per_source_buckets), default=0)
+    for idx in range(max_depth):
+        for bucket in per_source_buckets:
+            if idx < len(bucket):
+                candidates.append(bucket[idx])
+
+    return candidates[: MAX_POSTS_PER_RUN * 3]
 
 
 # ==========================================
@@ -214,11 +313,11 @@ def fetch_candidate_articles(posted_urls):
 def call_gemini(prompt, expect_json=True, max_tokens=4096):
     global key_index
     if not GEMINI_KEYS:
-        raise RuntimeError("GEMINI_API_KEYS સેટ નથી! GitHub Secrets માં ઉમેરો.")
+        raise RuntimeError("GEMINI_API_KEYS અથવા GEMINI_API_KEY GitHub Secrets માં સેટ નથી!")
 
     last_err = None
     for model_name in MODEL_FALLBACKS:
-        for attempt in range(len(GEMINI_KEYS)):
+        for _ in range(len(GEMINI_KEYS)):
             api_key = GEMINI_KEYS[key_index % len(GEMINI_KEYS)]
             key_index += 1
 
@@ -250,14 +349,14 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096):
                         return json.loads(raw_text)
                     return raw_text
                 elif res.status_code == 429:
-                    print(f"[Rate Limit] Model {model_name}, rotating key...")
+                    print(f"[Rate Limit] {model_name}, rotating key...")
                     time.sleep(3)
-                    last_err = f"429: {res.text[:200]}"
+                    last_err = f"429: {res.text[:180]}"
                     continue
                 else:
                     last_err = f"{model_name} HTTP {res.status_code}: {res.text[:250]}"
                     print(f"[Gemini Warning] {last_err}")
-                    break  # Try next fallback model
+                    break
             except Exception as e:
                 last_err = str(e)
                 time.sleep(2)
@@ -266,41 +365,39 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096):
 
 
 # ==========================================
-# 5. TWO-STEP ORIGINAL REWRITING & AUDIT
+# 5. TWO-STEP ORIGINAL REWRITING & COPYRIGHT AUDIT
 # ==========================================
 def generate_original_english_article(article):
-    """Pass 1: ૧૦૦% મૌલિક, પૂરો SEO & Google News ફ્રેન્ડલી આર્ટિકલ બનાવે છે."""
     today_str = get_ist_now().strftime("%B %d, %Y")
     prompt = f"""
 You are a senior Indian financial journalist writing for 'MarketMunafa' on {today_str}.
-Read the source facts below and write a COMPLETE, 100% ORIGINAL, human-sounding, deeply informative news analysis article from scratch.
+Read the source facts below and write a COMPLETE, 100% ORIGINAL, human-sounding news analysis article from scratch as if you researched and reported it yourself.
 
 STRICT RULES:
-- DO NOT copy sentences or structure from the source. Completely rewrite in fresh journalistic prose.
-- Keep all numbers, dates, company names, and facts 100% accurate to the source. Do NOT invent numbers.
-- Write a COMPLETE article (at least 650-900 words), never half or truncated.
-- Follow Google News, Google Discover, and AdSense E-E-A-T best practices: clear neutral headline (no clickbait), inverted-pyramid lead, structured H2 sections, investor takeaways, and FAQs.
-- Generate 10 to 14 SEO tags/labels (mix of short popular tags like 'Stock Market', 'Business News' and specific company/topic tags).
-- Provide a short 4-to-7 word punchy thumbnail headline for the image banner.
+- ZERO copy-paste: Do NOT reuse sentences, phrasing, or paragraph structure from the source.
+- Keep all numbers, dates, company names, and facts 100% accurate. Never invent numbers.
+- Write a COMPLETE, detailed article (700-950 words), never half or cut-off.
+- Optimize for Google News, Google Discover, AdSense safety, and top Google Search ranking: crisp factual SEO title (no clickbait), clear lead, 3 rich H2 analysis sections, 5 bullet highlights, 3 reader FAQs, and conclusion.
+- Generate 10 to 12 SEO tags (mix of broad popular tags like 'Stock Market', 'Business News', 'Share Market' and specific company/sector tags).
+- Provide a punchy 4-to-7 word thumbnail headline for the image banner.
 
-SOURCE: {article['source']}
 SOURCE TITLE: {article['title']}
-SOURCE CONTENT:
+SOURCE FACTS:
 {article['full_text']}
 
 Return ONLY valid JSON with this exact schema:
 {{
   "seo_title": "Clear, high-CTR Google News headline (60-78 chars)",
   "thumbnail_headline": "Short 4-7 word bold headline for thumbnail",
-  "category_badge": "2-3 word category e.g. MARKET UPDATE / BUSINESS NEWS",
+  "category_badge": "2-3 word category e.g. MARKET UPDATE / STOCK NEWS",
   "meta_description": "Compelling 140-155 char SEO meta description",
-  "tags": ["Tag1", "Tag2", "Tag3", "..."],
-  "intro": "2 strong opening paragraphs explaining who, what, when, why it matters.",
+  "tags": ["Tag1", "Tag2", "Tag3"],
+  "intro": "2 strong opening paragraphs explaining who, what, when, and why it matters.",
   "key_highlights": ["Bullet 1", "Bullet 2", "Bullet 3", "Bullet 4", "Bullet 5"],
   "sections": [
     {{"heading": "H2 Section Title 1", "body": "Detailed 2-3 paragraphs"}},
     {{"heading": "H2 Section Title 2", "body": "Detailed 2-3 paragraphs"}},
-    {{"heading": "Impact on Investors & Market Outlook", "body": "Balanced analytical view without buy/sell financial advice"}}
+    {{"heading": "What It Means for Investors & Market Outlook", "body": "Balanced analytical view without buy/sell financial advice"}}
   ],
   "faqs": [
     {{"q": "Relevant user search question 1?", "a": "Clear concise factual answer."}},
@@ -314,34 +411,46 @@ Return ONLY valid JSON with this exact schema:
 
 
 def verify_and_polish_article(draft_json, article):
-    """Pass 2 (ડબલ ચેક): કોપીરાઇટ ફ્રી, ફેક્ટ-ચેક અને Google News/AdSense ક્વોલિટી ઓડિટ."""
+    """Pass 2: Python n-gram ચેક + Gemini ડબલ કોપીરાઇટ/ફેક્ટ/SEO ઓડિટ."""
+    draft_flat = " ".join([
+        draft_json.get("seo_title", ""),
+        draft_json.get("intro", ""),
+        " ".join(s.get("body", "") for s in draft_json.get("sections", [])),
+        draft_json.get("conclusion", "")
+    ])
+    overlaps = find_copied_phrases(article["full_text"], draft_flat, ngram_size=6)
+    overlap_note = (
+        f"IMPORTANT: These exact 6-word phrases overlapped with the source and MUST be completely rewritten: {overlaps}"
+        if overlaps else "No 6-word verbatim overlaps detected; double-check sentence originality."
+    )
+
     prompt = f"""
 You are the Chief Editor and Copyright/SEO Auditor for MarketMunafa.
-Perform a STRICT 2nd-pass audit on the DRAFT ARTICLE against the ORIGINAL SOURCE.
+Perform a STRICT 2nd-pass verification on the DRAFT ARTICLE against the ORIGINAL SOURCE.
+
+{overlap_note}
 
 CHECKLIST:
-1. COPYRIGHT SAFETY: Ensure zero phrases (6+ words) are copied verbatim from the source. Rephrase anything similar into fresh original English.
-2. FACT CHECK: Verify every number, percentage, company name, and date matches the source. Fix any exaggeration or hallucination.
-3. COMPLETENESS: Confirm intro, 5 key_highlights, 3 detailed sections, 3 FAQs, and conclusion are all complete and rich (no placeholders, no cut-off sentences).
-4. GOOGLE NEWS & ADSENSE SAFETY: Ensure neutral journalistic tone, no guaranteed profit claims, no policy-violating wording, high-ranking SEO title, and clean popular + specific tags (max 12 tags, each under 30 chars).
+1. 100% COPYRIGHT FREE: Ensure ZERO phrases (6+ words) match the source verbatim. Rewrite any similar wording into natural, fresh journalism.
+2. FACT ACCURACY: Confirm every figure, date, and company detail matches the source without exaggeration.
+3. COMPLETENESS: Confirm intro, 5 key_highlights, 3 full sections, 3 FAQs, and conclusion are all complete (no truncated text).
+4. GOOGLE NEWS & ADSENSE POLICY: Neutral authoritative tone, no guaranteed return claims, strong SEO headline, and clean tags (max 12, each under 28 chars).
 
 ORIGINAL SOURCE EXCERPT:
 {article['full_text'][:3500]}
 
-DRAFT JSON TO AUDIT & IMPROVE:
+DRAFT JSON TO AUDIT & FINALIZE:
 {json.dumps(draft_json, ensure_ascii=False)}
 
-Return ONLY the final verified, polished JSON in the EXACT same schema as the draft, plus `"audit_passed": true`.
+Return ONLY the final verified JSON in the EXACT same schema as the draft, plus `"audit_passed": true`.
 """
     verified = call_gemini(prompt, expect_json=True, max_tokens=4096)
-    # પૂરું કન્ટેન્ટ છે કે નહીં તેની ચકાસણી
     if not verified.get("seo_title") or not verified.get("sections") or len(verified.get("sections", [])) < 2:
         raise ValueError("Verified article incomplete.")
     return verified
 
 
 def translate_article_to_language(verified_en, lang_name):
-    """એક-એક ભાષામાં સંપૂર્ણ, કુદરતી અનુવાદ (અધૂરું કન્ટેન્ટ ટાળવા અલગ કોલ)."""
     payload_to_translate = {
         "seo_title": verified_en["seo_title"],
         "intro": verified_en["intro"],
@@ -350,14 +459,13 @@ def translate_article_to_language(verified_en, lang_name):
         "faqs": verified_en["faqs"],
         "conclusion": verified_en["conclusion"]
     }
-
     prompt = f"""
 Translate the following COMPLETE financial news article JSON into natural, fluent, contemporary {lang_name} used by modern Indian news readers.
 
 RULES:
-- Translate EVERY single field completely (seo_title, intro, all key_highlights, all sections, all faqs, conclusion). Do NOT summarize or shorten anything.
-- Keep company names, ticker names, ₹ amounts, and well-known financial terms (IPO, RBI, SEBI, Nifty, Sensex, EBITDA, Q2) natural and easy to understand.
-- Keep the exact same JSON keys and structure.
+- Translate EVERY field completely (seo_title, intro, all key_highlights, all sections, all faqs, conclusion). Never shorten or skip any paragraph.
+- Keep company names, ₹ amounts, and common market terms (IPO, RBI, SEBI, Nifty, Sensex, EBITDA, Q2) natural and easy to read.
+- Preserve the exact JSON keys and structure.
 
 INPUT JSON:
 {json.dumps(payload_to_translate, ensure_ascii=False)}
@@ -371,19 +479,24 @@ Return ONLY valid JSON.
 
 
 # ==========================================
-# 6. CUSTOM THUMBNAIL GENERATOR (author.jpg)
+# 6. CUSTOM THUMBNAIL GENERATOR (PNG / JPG)
 # ==========================================
-def remove_white_bg_clean(img_rgba, threshold=232):
-    """તમારા સફેદ બેકગ્રાઉન્ડ વાળા ફોટાને સાફ કરીને ટ્રાન્સપરન્ટ કટઆઉટ બનાવે છે."""
+def find_author_photo():
+    for fname in AUTHOR_IMAGE_CANDIDATES:
+        if os.path.exists(fname):
+            return fname
+    return None
+
+
+def remove_white_bg_clean(img_rgba, threshold=236):
     datas = img_rgba.getdata()
     new_data = []
     for r, g, b, a in datas:
         if r >= threshold and g >= threshold and b >= threshold:
             new_data.append((255, 255, 255, 0))
-        elif r >= threshold - 20 and g >= threshold - 20 and b >= threshold - 20:
-            # કિનારી સોફ્ટ રાખવા માટે
+        elif r >= threshold - 18 and g >= threshold - 18 and b >= threshold - 18:
             avg = (r + g + b) // 3
-            alpha = max(0, min(255, int((threshold - avg) * 12)))
+            alpha = max(0, min(255, int((threshold - avg) * 14)))
             new_data.append((r, g, b, alpha))
         else:
             new_data.append((r, g, b, a))
@@ -407,74 +520,104 @@ def get_font(size, bold=True):
     return ImageFont.load_default()
 
 
-def create_custom_thumbnail(headline, badge_text, slug_id):
-    """1200x675 (16:9 Google Discover & Google News HD) થમ્બનેલ બનાવે છે."""
+def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
+    """તમારા PNG/JPG ફોટા સાથે 1200x675 HD થમ્બનેલ બનાવી તરત GitHub પર લાઈવ કરે છે."""
     os.makedirs(THUMBNAIL_DIR, exist_ok=True)
     W, H = 1200, 675
-    canvas = Image.new("RGBA", (W, H), (10, 25, 47, 255))
+    th = THUMB_THEMES[theme_index % len(THUMB_THEMES)]
+
+    canvas = Image.new("RGBA", (W, H), (*th["bg1"], 255))
     draw = ImageDraw.Draw(canvas)
 
-    # ડાર્ક ફાઇનાન્સ ગ્રેડિયન્ટ બેકગ્રાઉન્ડ
+    # સ્મૂથ ગ્રેડિયન્ટ બેકગ્રાઉન્ડ
     for y in range(H):
-        r = int(8 + (16 * y / H))
-        g = int(22 + (36 * y / H))
-        b = int(48 + (52 * y / H))
+        r = int(th["bg1"][0] + (th["bg2"][0] - th["bg1"][0]) * y / H)
+        g = int(th["bg1"][1] + (th["bg2"][1] - th["bg1"][1]) * y / H)
+        b = int(th["bg1"][2] + (th["bg2"][2] - th["bg1"][2]) * y / H)
         draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-    # જમણી બાજુ સોફ્ટ ગોલ્ડ/બ્લુ ગ્લો સર્કલ
+    # જમણી બાજુ ફોટા પાછળ સોફ્ટ ગ્લો
     glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(glow)
-    gdraw.ellipse([700, 60, 1240, 620], fill=(25, 118, 210, 65))
-    gdraw.ellipse([760, 120, 1180, 560], fill=(245, 158, 11, 45))
+    gdraw.ellipse([690, 50, 1240, 610], fill=(*th["accent"], 55))
+    gdraw.ellipse([760, 120, 1180, 550], fill=(255, 255, 255, 35))
     canvas = Image.alpha_composite(canvas, glow)
     draw = ImageDraw.Draw(canvas)
 
-    # ટોપ ગોલ્ડ સ્ટ્રીપ
-    draw.rectangle([0, 0, W, 10], fill=(245, 158, 11, 255))
+    # ટોપ એક્સેન્ટ સ્ટ્રીપ
+    draw.rectangle([0, 0, W, 10], fill=(*th["accent"], 255))
 
     # કેટેગરી બેજ
-    badge = (badge_text or "MARKET UPDATE").upper()[:26]
+    badge = (badge_text or "MARKET NEWS").upper()[:26]
     badge_font = get_font(28, bold=True)
-    draw.rounded_rectangle([55, 55, 55 + max(280, len(badge) * 20), 108], radius=10, fill=(220, 38, 38, 255))
+    badge_w = max(280, len(badge) * 20 + 40)
+    draw.rounded_rectangle([55, 55, 55 + badge_w, 108], radius=10, fill=(*th["badge"], 255))
     draw.text((75, 65), badge, font=badge_font, fill=(255, 255, 255, 255))
 
     # મુખ્ય હેડલાઈન (ડાબી બાજુ)
-    title_font = get_font(56, bold=True)
+    title_font = get_font(54, bold=True)
     wrapped = textwrap.wrap(headline, width=21)[:4]
-    y_pos = 155
+    y_pos = 152
     for idx, line in enumerate(wrapped):
-        color = (250, 204, 21, 255) if idx == 0 else (255, 255, 255, 255)
+        color = (*th["accent"], 255) if idx == 0 else (255, 255, 255, 255)
         draw.text((55, y_pos), line, font=title_font, fill=color)
         y_pos += 76
 
     # નીચે બ્રાન્ડિંગ બાર
     sub_font = get_font(26, bold=True)
     date_str = get_ist_now().strftime("%d %b %Y")
-    draw.rounded_rectangle([55, 555, 560, 618], radius=12, fill=(15, 118, 110, 235))
+    draw.rounded_rectangle([55, 555, 575, 618], radius=12, fill=(*th["bar"], 240))
     draw.text((78, 571), f"MARKETMUNAFA  |  {date_str}", font=sub_font, fill=(255, 255, 255, 255))
 
-    # તમારા ફોટા (author.jpg) ને જમણી બાજુ ગોઠવવો
-    if os.path.exists(AUTHOR_IMAGE_PATH):
+    # તમારો PNG/JPG ફોટો જમણી બાજુ ગોઠવવો
+    author_path = find_author_photo()
+    if author_path:
         try:
-            author = Image.open(AUTHOR_IMAGE_PATH).convert("RGBA")
-            author = remove_white_bg_clean(author)
-            target_h = 590
+            author = Image.open(author_path).convert("RGBA")
+            # જો PNG પહેલેથી ટ્રાન્સપરન્ટ હોય તો સીધો જ વાપરવો; નહીંતર સફેદ બેકગ્રાઉન્ડ હટાવવું
+            alpha_min, _ = author.getchannel("A").getextrema()
+            if alpha_min >= 250:
+                author = remove_white_bg_clean(author)
+
+            # ખાલી ટ્રાન્સપરન્ટ બોર્ડર ક્રોપ કરો જેથી ફોટો મોટો અને ચોખ્ખો દેખાય
+            bbox = author.getbbox()
+            if bbox:
+                author = author.crop(bbox)
+
+            target_h = 595
             ratio = target_h / author.height
             target_w = int(author.width * ratio)
-            author = author.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            if target_w > 540:
+                scale = 540 / target_w
+                target_w = 540
+                target_h = int(target_h * scale)
 
-            paste_x = W - target_w - 15
+            author = author.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            paste_x = W - target_w - 10
             paste_y = H - target_h
             canvas.paste(author, (paste_x, paste_y), author)
         except Exception as e:
             print(f"[Thumbnail Photo Error] {e}")
+    else:
+        print("⚠️ author.png / 1001185905.png ફોટો રેપોમાં મળ્યો નથી!")
 
     filename = f"thumb_{slug_id}.jpg"
     filepath = os.path.join(THUMBNAIL_DIR, filename)
     canvas.convert("RGB").save(filepath, "JPEG", quality=90, optimize=True)
 
     if GITHUB_REPO:
-        # jsDelivr CDN ફાસ્ટ અને Google News/Blogger માટે 100% ફ્રેન્ડલી છે
+        # Blogger પર પોસ્ટ પબ્લિશ થાય તે પહેલા જ થમ્બનેલ GitHub પર પુશ કરી દો
+        try:
+            subprocess.run(["git", "add", filepath], check=True)
+            subprocess.run([
+                "git", "-c", "user.name=MarketMunafa Bot",
+                "-c", "user.email=bot@marketmunafa.local",
+                "commit", "-m", f"Add thumbnail {filename}"
+            ], check=False)
+            subprocess.run(["git", "push"], check=True)
+            time.sleep(3)
+        except Exception as e:
+            print(f"[Git Push Thumb Warning] {e}")
         return f"https://cdn.jsdelivr.net/gh/{GITHUB_REPO}@{GITHUB_BRANCH}/{THUMBNAIL_DIR}/{filename}"
     return None
 
@@ -539,11 +682,10 @@ def build_language_block(lang_data, lang_code, is_default=False):
     """
 
 
-def build_complete_post_html(verified_en, translations, thumb_url, source_name):
+def build_complete_post_html(verified_en, translations, thumb_url):
     ist_str = get_ist_now().strftime("%B %d, %Y | %I:%M %p IST")
     uid = hashlib.md5(verified_en["seo_title"].encode("utf-8")).hexdigest()[:8]
 
-    # Google News & SEO FAQ Schema (JSON-LD)
     faq_schema = {
         "@context": "https://schema.org",
         "@type": "FAQPage",
@@ -557,7 +699,6 @@ def build_complete_post_html(verified_en, translations, thumb_url, source_name):
         ]
     }
 
-    # ભાષા બદલવાના બટન્સ
     lang_buttons = [f"<button type='button' class='mm-lbtn active' onclick=\"mmSwitchPostLang('{uid}','en',this)\">English</button>"]
     for code, native_label, _ in TARGET_LANGUAGES:
         if code in translations:
@@ -612,7 +753,7 @@ def build_complete_post_html(verified_en, translations, thumb_url, source_name):
 
   <hr style="margin:26px 0 14px 0; border:none; border-top:1px solid #e2e8f0;" />
   <p style="font-size:12.5px; color:#64748b; line-height:1.6;">
-    <strong>Disclaimer & Editorial Note:</strong> This report is prepared by the MarketMunafa Editorial Desk based on publicly available market developments and news reports ({source_name}) for informational and educational purposes only. It does not constitute investment advice. Please consult a SEBI-registered financial advisor before making investment decisions.
+    <strong>Disclaimer:</strong> This report is prepared by the MarketMunafa Editorial Desk for informational and educational purposes only and does not constitute investment advice. Please consult a SEBI-registered financial advisor before making any investment decisions.
   </p>
 
   <script type="application/ld+json">{json.dumps(faq_schema, ensure_ascii=False)}</script>
@@ -639,7 +780,7 @@ def build_complete_post_html(verified_en, translations, thumb_url, source_name):
 # ==========================================
 def get_blogger_access_token():
     if not all([CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN]):
-        raise RuntimeError("Blogger OAuth credentials missing in environment variables.")
+        raise RuntimeError("Blogger OAuth credentials missing in GitHub Secrets.")
     res = requests.post(
         "https://oauth2.googleapis.com/token",
         data={
@@ -656,7 +797,6 @@ def get_blogger_access_token():
 
 
 def publish_to_blogger(access_token, title, html_content, labels):
-    # Blogger labels નિયમ: કુલ કેરેક્ટર <= 200 અને ખાસ ચિહ્નો વગર
     clean_labels = []
     total_chars = 0
     for lbl in labels:
@@ -680,8 +820,7 @@ def publish_to_blogger(access_token, title, html_content, labels):
     }
     res = requests.post(api_url, headers=headers, json=payload, timeout=25)
     if res.status_code in (200, 201):
-        post_url = res.json().get("url", "")
-        print(f"✅ Published successfully: {title} -> {post_url}")
+        print(f"✅ Published: {title} -> {res.json().get('url', '')}")
         return True
     else:
         print(f"❌ Blogger API Error ({res.status_code}): {res.text}")
@@ -689,7 +828,7 @@ def publish_to_blogger(access_token, title, html_content, labels):
 
 
 # ==========================================
-# 9. MAIN EXECUTION LOOP
+# 9. MAIN EXECUTION LOOP (દરેક ન્યૂઝની અલગ પોસ્ટ)
 # ==========================================
 def main():
     history = load_history()
@@ -701,9 +840,9 @@ def main():
         return
 
     remaining_today = min(MAX_POSTS_PER_RUN, DAILY_MAX_POSTS - posted_today)
-    candidates = fetch_candidate_articles(history["posted_urls"])
+    candidates = fetch_fresh_diverse_articles(history)
     if not candidates:
-        print("ℹ️ હાલમાં કોઈ નવા પબ્લિક ફુલ આર્ટિકલ મળ્યા નથી.")
+        print("ℹ️ હાલમાં છેલ્લા 36 કલાકના કોઈ નવા અલગ આર્ટિકલ મળ્યા નથી.")
         return
 
     access_token = get_blogger_access_token()
@@ -713,17 +852,17 @@ def main():
         if published_count >= remaining_today:
             break
 
-        print(f"\n🔍 Processing [{art['source']}]: {art['title']}")
+        print(f"\n🔍 Fresh News [{art['source']}]: {art['title']}")
         try:
-            # Step 1: મૌલિક અંગ્રેજી લેખ
+            # Step 1: 100% મૌલિક અંગ્રેજી લેખ
             draft_en = generate_original_english_article(art)
             time.sleep(2)
 
-            # Step 2: Gemini ડબલ ચેક (કોપીરાઇટ ફ્રી + ફેક્ટ ચેક + SEO)
+            # Step 2: Python n-gram ચેક + Gemini ડબલ કોપીરાઇટ/SEO ઓડિટ
             verified_en = verify_and_polish_article(draft_en, art)
             time.sleep(2)
 
-            # Step 3: ભારતની તમામ મુખ્ય ભાષામાં સંપૂર્ણ અનુવાદ (પહેલા બધી ભાષા તૈયાર થશે)
+            # Step 3: ભારતની તમામ મુખ્ય ભાષામાં સંપૂર્ણ અનુવાદ
             translations = {}
             all_langs_ready = True
             for code, native_name, eng_name in TARGET_LANGUAGES:
@@ -732,7 +871,7 @@ def main():
                     translations[code] = translate_article_to_language(verified_en, eng_name)
                     time.sleep(2)
                 except Exception as te:
-                    print(f"   ⚠️ Retry {eng_name} once: {te}")
+                    print(f"   ⚠️ Retry {eng_name}: {te}")
                     time.sleep(4)
                     try:
                         translations[code] = translate_article_to_language(verified_en, eng_name)
@@ -741,21 +880,21 @@ def main():
                         all_langs_ready = False
                         break
 
-            # અડધું કન્ટેન્ટ ક્યારેય પબ્લિશ નહીં થાય
             if not all_langs_ready:
                 print("⏭️ બધી ભાષા પૂરી ન બની હોવાથી આ પોસ્ટ સ્કિપ કરી.")
                 continue
 
-            # Step 4: તમારા ફોટા સાથે 1200x675 HD થમ્બનેલ
+            # Step 4: તમારા PNG ફોટા સાથે અલગ કલર થીમનું 1200x675 HD થમ્બનેલ
             slug_id = hashlib.md5(art["url"].encode("utf-8")).hexdigest()[:10]
             thumb_url = create_custom_thumbnail(
                 verified_en.get("thumbnail_headline", verified_en["seo_title"][:55]),
                 verified_en.get("category_badge", "MARKET NEWS"),
-                slug_id
+                slug_id,
+                theme_index=posted_today
             )
 
-            # Step 5: ફાઇનલ HTML અને બ્લોગર પબ્લિશ
-            post_html = build_complete_post_html(verified_en, translations, thumb_url, art["source"])
+            # Step 5: અલગ પોસ્ટ તરીકે Blogger પર પબ્લિશ
+            post_html = build_complete_post_html(verified_en, translations, thumb_url)
             ok = publish_to_blogger(
                 access_token=access_token,
                 title=verified_en["seo_title"],
@@ -767,6 +906,8 @@ def main():
                 published_count += 1
                 posted_today += 1
                 history["posted_urls"].append(art["url"])
+                history["posted_titles"].append(art["title"])
+                history["posted_titles"].append(verified_en["seo_title"])
                 history["daily_counts"][today_key] = posted_today
                 save_history(history)
                 time.sleep(5)
@@ -775,7 +916,7 @@ def main():
             print(f"❌ Error processing article: {e}")
             continue
 
-    print(f"\n🎉 Run finished! આ રનમાં કુલ {published_count} પોસ્ટ પબ્લિશ થઈ (આજની કુલ: {posted_today}).")
+    print(f"\n🎉 Run finished! આ રનમાં કુલ {published_count} અલગ-અલગ નવી પોસ્ટ પબ્લિશ થઈ (આજની કુલ: {posted_today}).")
 
 
 if __name__ == "__main__":
