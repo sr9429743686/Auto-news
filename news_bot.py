@@ -1,7 +1,9 @@
 import os
 import re
+import io
 import json
 import time
+import random
 import hashlib
 import textwrap
 import subprocess
@@ -12,7 +14,7 @@ from email.utils import parsedate_to_datetime
 
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 # ==========================================
 # 1. CONFIGURATION (GitHub Secrets માંથી આવશે)
@@ -42,9 +44,11 @@ MAX_ARTICLE_AGE_HOURS = int(os.environ.get("MAX_ARTICLE_AGE_HOURS", "36"))
 
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main").strip()
+AUTHOR_IMAGE_URL = os.environ.get("AUTHOR_IMAGE_URL", "").strip()
 
 AUTHOR_IMAGE_CANDIDATES = [
     "author.png",
+    "1001185905_2.png",
     "1001185905.png",
     "author.jpg",
     "author.jpeg",
@@ -59,7 +63,6 @@ HEADERS = {
     "Accept-Language": "en-IN,en;q=0.9"
 }
 
-# બધી 7 વેબસાઈટ્સના બિઝનેસ અને માર્કેટ પબ્લિક RSS ફીડ્સ
 NEWS_FEEDS = [
     ("Moneycontrol", "https://www.moneycontrol.com/rss/latestnews.xml"),
     ("LiveMint", "https://www.livemint.com/rss/markets"),
@@ -71,7 +74,6 @@ NEWS_FEEDS = [
     ("Moneycontrol Markets", "https://www.moneycontrol.com/rss/marketreports.xml"),
 ]
 
-# ભારતની મુખ્ય ભાષાઓ (બધી ભાષા તૈયાર થયા પછી જ પોસ્ટ પબ્લિશ થશે)
 TARGET_LANGUAGES = [
     ("gu", "ગુજરાતી", "Gujarati"),
     ("hi", "हिन्दी", "Hindi"),
@@ -90,12 +92,33 @@ PAYWALL_HINTS = [
     "for unlimited access", "create a free account to continue"
 ]
 
+# દરેક ન્યૂઝ માટે અલગ-અલગ પ્રીમિયમ TV-ન્યૂઝ સ્ટુડિયો થીમ
 THUMB_THEMES = [
-    {"bg1": (8, 22, 48), "bg2": (24, 58, 100), "accent": (245, 158, 11), "badge": (220, 38, 38), "bar": (15, 118, 110)},
-    {"bg1": (15, 23, 42), "bg2": (49, 46, 129), "accent": (56, 189, 248), "badge": (234, 88, 12), "bar": (30, 64, 175)},
-    {"bg1": (6, 40, 38), "bg2": (17, 94, 89), "accent": (250, 204, 21), "badge": (185, 28, 28), "bar": (15, 23, 42)},
-    {"bg1": (30, 14, 38), "bg2": (88, 28, 135), "accent": (251, 191, 36), "badge": (219, 39, 119), "bar": (17, 24, 39)},
-    {"bg1": (36, 16, 16), "bg2": (127, 29, 29), "accent": (253, 224, 71), "badge": (15, 118, 110), "bar": (15, 23, 42)},
+    {
+        "bg1": (7, 16, 36), "bg2": (18, 48, 92),
+        "accent": (250, 204, 21), "accent_text": (15, 23, 42),
+        "badge": (220, 38, 38), "glow": (56, 189, 248), "chart": (34, 197, 94)
+    },
+    {
+        "bg1": (6, 28, 28), "bg2": (15, 76, 72),
+        "accent": (253, 224, 71), "accent_text": (15, 23, 42),
+        "badge": (234, 88, 12), "glow": (45, 212, 191), "chart": (74, 222, 128)
+    },
+    {
+        "bg1": (24, 10, 38), "bg2": (68, 22, 105),
+        "accent": (251, 191, 36), "accent_text": (15, 23, 42),
+        "badge": (225, 29, 72), "glow": (192, 132, 252), "chart": (56, 189, 248)
+    },
+    {
+        "bg1": (28, 10, 14), "bg2": (96, 20, 28),
+        "accent": (250, 204, 21), "accent_text": (15, 23, 42),
+        "badge": (14, 116, 144), "glow": (251, 146, 60), "chart": (250, 204, 21)
+    },
+    {
+        "bg1": (12, 18, 30), "bg2": (30, 41, 75),
+        "accent": (56, 189, 248), "accent_text": (15, 23, 42),
+        "badge": (220, 38, 38), "glow": (250, 204, 21), "chart": (52, 211, 153)
+    },
 ]
 
 key_index = 0
@@ -178,7 +201,6 @@ def find_copied_phrases(source_text, draft_text, ngram_size=6):
     drf_words = re.findall(r"[a-z0-9]+", draft_text.lower())
     if len(src_words) < ngram_size or len(drf_words) < ngram_size:
         return []
-
     src_ngrams = {
         " ".join(src_words[i:i + ngram_size])
         for i in range(len(src_words) - ngram_size + 1)
@@ -194,14 +216,13 @@ def find_copied_phrases(source_text, draft_text, ngram_size=6):
 
 
 # ==========================================
-# 3. FRESH & DIVERSE NEWS FETCHING (ROUND-ROBIN)
+# 3. FRESH & DIVERSE NEWS FETCHING
 # ==========================================
 def extract_full_public_article(url):
     try:
         res = requests.get(url, headers=HEADERS, timeout=15)
         if res.status_code != 200:
             return None
-
         soup = BeautifulSoup(res.content, "html.parser")
         for tag in soup.find_all(["script", "style", "nav", "footer", "aside", "form", "noscript", "iframe"]):
             tag.decompose()
@@ -229,7 +250,6 @@ def extract_full_public_article(url):
             return None
         if any(p_hint in body_text_low for p_hint in PAYWALL_HINTS) and len(full_text) < 900:
             return None
-
         return full_text[:6500]
     except Exception:
         return None
@@ -291,7 +311,6 @@ def fetch_fresh_diverse_articles(history):
         for bucket in per_source_buckets:
             if idx < len(bucket):
                 candidates.append(bucket[idx])
-
     return candidates[: MAX_POSTS_PER_RUN * 3]
 
 
@@ -353,21 +372,21 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096):
 
 
 # ==========================================
-# 5. TWO-STEP ORIGINAL REWRITING & COPYRIGHT AUDIT
+# 5. TWO-STEP ORIGINAL REWRITING & AUDIT
 # ==========================================
 def generate_original_english_article(article):
     today_str = get_ist_now().strftime("%B %d, %Y")
     prompt = f"""
 You are a senior Indian financial journalist writing for 'MarketMunafa' on {today_str}.
-Read the source facts below and write a COMPLETE, 100% ORIGINAL, human-sounding news analysis article from scratch as if you researched and reported it yourself.
+Read the source facts below and write a COMPLETE, 100% ORIGINAL, human-sounding news analysis article from scratch.
 
 STRICT RULES:
 - ZERO copy-paste: Do NOT reuse sentences, phrasing, or paragraph structure from the source.
 - Keep all numbers, dates, company names, and facts 100% accurate. Never invent numbers.
 - Write a COMPLETE, detailed article (700-950 words), never half or cut-off.
-- Optimize for Google News, Google Discover, AdSense safety, and top Google Search ranking: crisp factual SEO title (no clickbait), clear lead, 3 rich H2 analysis sections, 5 bullet highlights, 3 reader FAQs, and conclusion.
-- Generate 10 to 12 SEO tags (mix of broad popular tags like 'Stock Market', 'Business News', 'Share Market' and specific company/sector tags).
-- Provide a punchy 4-to-7 word thumbnail headline for the image banner.
+- Optimize for Google News, Google Discover, AdSense safety, and top Google Search ranking.
+- Generate 10 to 12 SEO tags (mix of broad popular tags like 'Stock Market', 'Business News' and specific company/sector tags).
+- Provide a punchy 4-to-6 word thumbnail headline (for visual impact) and a 2-3 word top kicker (like 'BIG ALERT', 'IPO NEWS', 'MARKET BREAKING').
 
 SOURCE TITLE: {article['title']}
 SOURCE FACTS:
@@ -376,8 +395,8 @@ SOURCE FACTS:
 Return ONLY valid JSON with this exact schema:
 {{
   "seo_title": "Clear, high-CTR Google News headline (60-78 chars)",
-  "thumbnail_headline": "Short 4-7 word bold headline for thumbnail",
-  "category_badge": "2-3 word category e.g. MARKET UPDATE / STOCK NEWS",
+  "thumbnail_headline": "Short 4-6 word punchy bold headline for thumbnail",
+  "category_badge": "2-3 word category e.g. MARKET UPDATE / STOCK ALERT",
   "meta_description": "Compelling 140-155 char SEO meta description",
   "tags": ["Tag1", "Tag2", "Tag3"],
   "intro": "2 strong opening paragraphs explaining who, what, when, and why it matters.",
@@ -418,9 +437,9 @@ Perform a STRICT 2nd-pass verification on the DRAFT ARTICLE against the ORIGINAL
 {overlap_note}
 
 CHECKLIST:
-1. 100% COPYRIGHT FREE: Ensure ZERO phrases (6+ words) match the source verbatim. Rewrite any similar wording into natural, fresh journalism.
+1. 100% COPYRIGHT FREE: Ensure ZERO phrases (6+ words) match the source verbatim.
 2. FACT ACCURACY: Confirm every figure, date, and company detail matches the source without exaggeration.
-3. COMPLETENESS: Confirm intro, 5 key_highlights, 3 full sections, 3 FAQs, and conclusion are all complete (no truncated text).
+3. COMPLETENESS: Confirm intro, 5 key_highlights, 3 full sections, 3 FAQs, and conclusion are all complete.
 4. GOOGLE NEWS & ADSENSE POLICY: Neutral authoritative tone, no guaranteed return claims, strong SEO headline, and clean tags (max 12, each under 28 chars).
 
 ORIGINAL SOURCE EXCERPT:
@@ -466,12 +485,32 @@ Return ONLY valid JSON.
 
 
 # ==========================================
-# 6. CUSTOM THUMBNAIL GENERATOR (PNG / JPG)
+# 6. PRO TV-NEWS STUDIO THUMBNAIL ENGINE
 # ==========================================
-def find_author_photo():
+def load_author_photo():
+    """રેપોમાં રહેલો તમારો કોઈપણ ફોટો (PNG/JPG) અથવા AUTHOR_IMAGE_URL આપમેળે લાવે છે."""
+    if AUTHOR_IMAGE_URL:
+        try:
+            r = requests.get(AUTHOR_IMAGE_URL, headers=HEADERS, timeout=15)
+            if r.status_code == 200:
+                print("✅ Loaded author photo from AUTHOR_IMAGE_URL")
+                return Image.open(io.BytesIO(r.content)).convert("RGBA")
+        except Exception as e:
+            print(f"[Author URL Error] {e}")
+
+    # 1) પહેલા જાણીતા નામો ચેક કરો
     for fname in AUTHOR_IMAGE_CANDIDATES:
         if os.path.exists(fname):
-            return fname
+            print(f"✅ Found author photo: {fname}")
+            return Image.open(fname).convert("RGBA")
+
+    # 2) ન મળે તો મેઈન ફોલ્ડરમાં રહેલી કોઈપણ PNG/JPG ફાઈલ આપમેળે પસંદ કરો
+    for fname in sorted(os.listdir(".")):
+        if fname.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) and not fname.startswith("thumb_"):
+            print(f"✅ Auto-detected author photo in repo: {fname}")
+            return Image.open(fname).convert("RGBA")
+
+    print("⚠️ ચેતવણી: GitHub રેપોમાં તમારો ફોટો (જેમ કે author.png કે 1001185905_2.png) મળ્યો નથી!")
     return None
 
 
@@ -479,11 +518,13 @@ def remove_white_bg_clean(img_rgba, threshold=236):
     datas = img_rgba.getdata()
     new_data = []
     for r, g, b, a in datas:
-        if r >= threshold and g >= threshold and b >= threshold:
+        if a < 10:
             new_data.append((255, 255, 255, 0))
-        elif r >= threshold - 18 and g >= threshold - 18 and b >= threshold - 18:
+        elif r >= threshold and g >= threshold and b >= threshold:
+            new_data.append((255, 255, 255, 0))
+        elif r >= threshold - 22 and g >= threshold - 22 and b >= threshold - 22:
             avg = (r + g + b) // 3
-            alpha = max(0, min(255, int((threshold - avg) * 14)))
+            alpha = max(0, min(255, int((threshold - avg) * 12)))
             new_data.append((r, g, b, alpha))
         else:
             new_data.append((r, g, b, a))
@@ -495,6 +536,7 @@ def get_font(size, bold=True):
     font_candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
         "arialbd.ttf",
         "arial.ttf"
     ]
@@ -507,94 +549,221 @@ def get_font(size, bold=True):
     return ImageFont.load_default()
 
 
+def draw_stock_chart_bg(canvas, th, seed_str):
+    """બેકગ્રાઉન્ડમાં પ્રોફેશનલ સ્ટોક માર્કેટ ગ્રિડ, કેન્ડલસ્ટિક્સ અને ગ્લોઈંગ ટ્રેન્ડ લાઈન બનાવે છે."""
+    W, H = canvas.size
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    odraw = ImageDraw.Draw(overlay)
+
+    # 1) સૂક્ષ્મ ફાઇનાન્શિયલ ગ્રિડ લાઈન્સ
+    for x in range(0, W, 60):
+        odraw.line([(x, 0), (x, H)], fill=(255, 255, 255, 14), width=1)
+    for y in range(0, H, 60):
+        odraw.line([(0, y), (W, y)], fill=(255, 255, 255, 14), width=1)
+
+    # 2) કેન્ડલસ્ટિક બાર્સ (ડાબેથી જમણે ચઢતો ટ્રેન્ડ)
+    rng = random.Random(seed_str)
+    points = []
+    base_y = 540
+    for i in range(18):
+        cx = 40 + i * 44
+        delta = rng.randint(-38, 22)
+        base_y = max(220, min(565, base_y + delta))
+        body_h = rng.randint(24, 72)
+        is_green = rng.random() > 0.35
+        color = (34, 197, 94, 48) if is_green else (239, 68, 68, 42)
+        wick_top = max(160, base_y - body_h // 2 - rng.randint(15, 35))
+        wick_bot = min(610, base_y + body_h // 2 + rng.randint(15, 35))
+        odraw.line([(cx, wick_top), (cx, wick_bot)], fill=color, width=3)
+        odraw.rounded_rectangle(
+            [cx - 9, base_y - body_h // 2, cx + 9, base_y + body_h // 2],
+            radius=3, fill=color
+        )
+        points.append((cx, base_y - 20))
+
+    # 3) ગ્લોઈંગ ટ્રેન્ડ લાઈન
+    if len(points) >= 2:
+        trend_glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        tg_draw = ImageDraw.Draw(trend_glow)
+        tg_draw.line(points, fill=(*th["chart"], 130), width=7)
+        trend_glow = trend_glow.filter(ImageFilter.GaussianBlur(radius=6))
+        overlay = Image.alpha_composite(overlay, trend_glow)
+        odraw = ImageDraw.Draw(overlay)
+        odraw.line(points, fill=(*th["chart"], 190), width=3)
+
+    return Image.alpha_composite(canvas, overlay)
+
+
 def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
+    """1200x675 પ્રોફેશનલ સ્ટુડિયો-ક્વોલિટી થમ્બનેલ બનાવી GitHub પર તરત લાઈવ કરે છે."""
     os.makedirs(THUMBNAIL_DIR, exist_ok=True)
     W, H = 1200, 675
     th = THUMB_THEMES[theme_index % len(THUMB_THEMES)]
 
+    # 1) ડાયગોનલ રિચ ગ્રેડિયન્ટ બેકગ્રાઉન્ડ
     canvas = Image.new("RGBA", (W, H), (*th["bg1"], 255))
     draw = ImageDraw.Draw(canvas)
-
     for y in range(H):
-        r = int(th["bg1"][0] + (th["bg2"][0] - th["bg1"][0]) * y / H)
-        g = int(th["bg1"][1] + (th["bg2"][1] - th["bg1"][1]) * y / H)
-        b = int(th["bg1"][2] + (th["bg2"][2] - th["bg1"][2]) * y / H)
+        t = y / H
+        r = int(th["bg1"][0] + (th["bg2"][0] - th["bg1"][0]) * t)
+        g = int(th["bg1"][1] + (th["bg2"][1] - th["bg1"][1]) * t)
+        b = int(th["bg1"][2] + (th["bg2"][2] - th["bg1"][2]) * t)
         draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(glow)
-    gdraw.ellipse([690, 50, 1240, 610], fill=(*th["accent"], 55))
-    gdraw.ellipse([760, 120, 1180, 550], fill=(255, 255, 255, 35))
-    canvas = Image.alpha_composite(canvas, glow)
-    draw = ImageDraw.Draw(canvas)
+    # 2) સ્ટોક માર્કેટ કેન્ડલસ્ટિક અને ગ્રિડ ઓવરલે
+    canvas = draw_stock_chart_bg(canvas, th, slug_id)
 
-    draw.rectangle([0, 0, W, 10], fill=(*th["accent"], 255))
+    # 3) ડાબી બાજુ ડાર્ક રીડેબિલિટી વિગ્નેટ + જમણી બાજુ સ્ટુડિયો સ્પોટલાઈટ ગ્લો
+    light_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ldraw = ImageDraw.Draw(light_layer)
+    ldraw.ellipse([660, 20, 1260, 640], fill=(*th["glow"], 95))
+    ldraw.ellipse([760, 110, 1180, 540], fill=(*th["accent"], 75))
+    ldraw.ellipse([-120, -80, 740, 700], fill=(4, 10, 22, 130))
+    light_layer = light_layer.filter(ImageFilter.GaussianBlur(radius=45))
+    canvas = Image.alpha_composite(canvas, light_layer)
 
-    badge = (badge_text or "MARKET NEWS").upper()[:26]
-    badge_font = get_font(28, bold=True)
-    badge_w = max(280, len(badge) * 20 + 40)
-    draw.rounded_rectangle([55, 55, 55 + badge_w, 108], radius=10, fill=(*th["badge"], 255))
-    draw.text((75, 65), badge, font=badge_font, fill=(255, 255, 255, 255))
-
-    title_font = get_font(54, bold=True)
-    wrapped = textwrap.wrap(headline, width=21)[:4]
-    y_pos = 152
-    for idx, line in enumerate(wrapped):
-        color = (*th["accent"], 255) if idx == 0 else (255, 255, 255, 255)
-        draw.text((55, y_pos), line, font=title_font, fill=color)
-        y_pos += 76
-
-    sub_font = get_font(26, bold=True)
-    date_str = get_ist_now().strftime("%d %b %Y")
-    draw.rounded_rectangle([55, 555, 575, 618], radius=12, fill=(*th["bar"], 240))
-    draw.text((78, 571), f"MARKETMUNAFA  |  {date_str}", font=sub_font, fill=(255, 255, 255, 255))
-
-    author_path = find_author_photo()
-    if author_path:
+    # 4) તમારો ફોટો + સ્ટુડિયો રિમ-લાઈટ ગ્લો (જમણી બાજુ)
+    author = load_author_photo()
+    if author is not None:
         try:
-            author = Image.open(author_path).convert("RGBA")
-            alpha_min, _ = author.getchannel("A").getextrema()
-            if alpha_min >= 250:
+            # જો બેકગ્રાઉન્ડ સફેદ હોય તો સાફ કરો (ટ્રાન્સપરન્ટ PNG હોય તો સીધો રહેશે)
+            w_a, h_a = author.size
+            corners = [
+                author.getpixel((2, 2)),
+                author.getpixel((w_a - 3, 2)),
+                author.getpixel((2, h_a - 3)),
+                author.getpixel((w_a - 3, h_a - 3)),
+            ]
+            white_corners = sum(1 for r, g, b, a in corners if a > 220 and r > 230 and g > 230 and b > 230)
+            if white_corners >= 2:
                 author = remove_white_bg_clean(author)
 
             bbox = author.getbbox()
             if bbox:
                 author = author.crop(bbox)
 
-            target_h = 595
+            # ચહેરો વધુ સ્પષ્ટ અને સ્ટુડિયો-લિટ દેખાય તે માટે હળવું એન્હાન્સમેન્ટ
+            rgb_part = author.convert("RGB")
+            rgb_part = ImageEnhance.Contrast(rgb_part).enhance(1.08)
+            rgb_part = ImageEnhance.Color(rgb_part).enhance(1.08)
+            rgb_part = ImageEnhance.Sharpness(rgb_part).enhance(1.18)
+            author_enhanced = rgb_part.convert("RGBA")
+            author_enhanced.putalpha(author.getchannel("A"))
+            author = author_enhanced
+
+            # સાઈઝ સેટ કરો (નીચેના ટિકર બાર પાછળ સ્મૂધ રીતે બેસે તે રીતે)
+            target_h = 585
             ratio = target_h / author.height
             target_w = int(author.width * ratio)
-            if target_w > 540:
-                scale = 540 / target_w
-                target_w = 540
+            if target_w > 530:
+                scale = 530 / target_w
+                target_w = 530
                 target_h = int(target_h * scale)
 
             author = author.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            paste_x = W - target_w - 10
-            paste_y = H - target_h
+            paste_x = W - target_w - 12
+            paste_y = H - target_h - 40  # નીચેનો બાર શર્ટની ધારને ઢાંકીને ક્લીન લુક આપશે
+
+            # ફોટા પાછળ ગોલ્ડન/વ્હાઈટ સ્ટુડિયો રિમ-લાઈટ ઓરા
+            rim_canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            rim_fill = Image.new("RGBA", author.size, (*th["accent"], 210))
+            rim_fill.putalpha(author.getchannel("A"))
+            rim_canvas.paste(rim_fill, (paste_x - 6, paste_y - 4))
+            rim_canvas = rim_canvas.filter(ImageFilter.GaussianBlur(radius=18))
+            canvas = Image.alpha_composite(canvas, rim_canvas)
+
+            # મૂળ ફોટો પેસ્ટ કરો
             canvas.paste(author, (paste_x, paste_y), author)
         except Exception as e:
             print(f"[Thumbnail Photo Error] {e}")
-    else:
-        print("⚠️ author.png / 1001185905.png ફોટો રેપોમાં મળ્યો નથી!")
+
+    draw = ImageDraw.Draw(canvas)
+
+    # 5) ટોપ એક્સેન્ટ બોર્ડર + LIVE બેજ
+    draw.rectangle([0, 0, W, 9], fill=(*th["accent"], 255))
+
+    badge = (badge_text or "MARKET BREAKING").upper()[:24]
+    badge_font = get_font(25, bold=True)
+    tb = draw.textbbox((0, 0), badge, font=badge_font)
+    badge_w = (tb[2] - tb[0]) + 72
+    draw.rounded_rectangle([52, 46, 52 + badge_w, 98], radius=10, fill=(*th["badge"], 255))
+    # લાઈવ વ્હાઈટ ડોટ
+    draw.ellipse([72, 64, 88, 80], fill=(255, 255, 255, 255))
+    draw.text((100, 56), badge, font=badge_font, fill=(255, 255, 255, 255))
+
+    # 6) મોટી 3D હેડલાઈન (પહેલી લાઈન હાઈલાઈટ બેનરમાં + બાકી લાઈન વ્હાઈટ બોલ્ડ)
+    clean_hl = " ".join(str(headline).split()).upper()
+    title_font = get_font(56, bold=True)
+    wrapped = textwrap.wrap(clean_hl, width=18)[:4]
+    if len(wrapped) <= 2:
+        title_font = get_font(62, bold=True)
+        wrapped = textwrap.wrap(clean_hl, width=16)[:3]
+
+    y_pos = 132
+    line_step = 86 if len(wrapped) <= 3 else 78
+
+    for idx, line in enumerate(wrapped):
+        bbox_l = draw.textbbox((0, 0), line, font=title_font)
+        lw = bbox_l[2] - bbox_l[0]
+        lh = bbox_l[3] - bbox_l[1]
+
+        if idx == 0:
+            # પહેલી લાઈન પર જોરદાર ગોલ્ડન હાઈલાઈટ બોક્સ
+            draw.rounded_rectangle(
+                [46, y_pos - 6, 46 + lw + 32, y_pos + lh + 18],
+                radius=10, fill=(*th["accent"], 255)
+            )
+            draw.text((62, y_pos), line, font=title_font, fill=(*th["accent_text"], 255))
+            y_pos += line_step + 12
+        else:
+            # ડાર્ક 3D શેડો + ક્રિસ્પ વ્હાઈટ ટેક્સ્ટ
+            draw.text((57, y_pos + 4), line, font=title_font, fill=(0, 0, 0, 220))
+            draw.text(
+                (52, y_pos), line, font=title_font,
+                fill=(255, 255, 255, 255),
+                stroke_width=2, stroke_fill=(0, 0, 0, 230)
+            )
+            y_pos += line_step
+
+    # 7) નીચે ફુલ-વિડ્થ TV-ન્યૂઝ ટિકર બાર
+    bar_y = H - 68
+    draw.rectangle([0, bar_y, W, H], fill=(10, 15, 28, 245))
+    draw.rectangle([0, bar_y, W, bar_y + 4], fill=(*th["accent"], 255))
+
+    brand_font = get_font(26, bold=True)
+    meta_font = get_font(23, bold=False)
+    draw.rounded_rectangle([42, bar_y + 13, 305, H - 11], radius=7, fill=(*th["accent"], 255))
+    draw.text((60, bar_y + 19), "MARKETMUNAFA", font=brand_font, fill=(15, 23, 42, 255))
+
+    date_str = get_ist_now().strftime("%d %b %Y").upper()
+    draw.text(
+        (328, bar_y + 21),
+        f"STOCK MARKET & BUSINESS ANALYSIS   •   {date_str}",
+        font=meta_font, fill=(226, 232, 240, 255)
+    )
 
     filename = f"thumb_{slug_id}.jpg"
     filepath = os.path.join(THUMBNAIL_DIR, filename)
-    canvas.convert("RGB").save(filepath, "JPEG", quality=90, optimize=True)
+    canvas.convert("RGB").save(filepath, "JPEG", quality=92, optimize=True)
+    print(f"🎨 Thumbnail generated locally: {filepath}")
 
     if GITHUB_REPO:
         try:
+            subprocess.run(["git", "config", "user.name", "MarketMunafa Bot"], check=False)
+            subprocess.run(["git", "config", "user.email", "bot@marketmunafa.local"], check=False)
             subprocess.run(["git", "add", filepath], check=True)
-            subprocess.run([
-                "git", "-c", "user.name=MarketMunafa Bot",
-                "-c", "user.email=bot@marketmunafa.local",
-                "commit", "-m", f"Add thumbnail {filename}"
-            ], check=False)
-            subprocess.run(["git", "push"], check=True)
-            time.sleep(3)
+            subprocess.run(["git", "commit", "-m", f"Add thumbnail {filename}"], check=False)
+            push_res = subprocess.run(["git", "push"], capture_output=True, text=True)
+            if push_res.returncode == 0:
+                print(f"✅ Thumbnail pushed to GitHub: {filename}")
+            else:
+                print(f"⚠️ Git push warning: {push_res.stderr}")
+            time.sleep(2)
         except Exception as e:
-            print(f"[Git Push Thumb Warning] {e}")
-        return f"https://cdn.jsdelivr.net/gh/{GITHUB_REPO}@{GITHUB_BRANCH}/{THUMBNAIL_DIR}/{filename}"
+            print(f"[Git Push Thumb Error] {e}")
+
+        # raw.githubusercontent.com 0 સેકન્ડમાં તરત લાઈવ લોડ થાય છે (Repo Public હોવી જરૂરી)
+        return f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{THUMBNAIL_DIR}/{filename}"
     return None
 
 
@@ -692,7 +861,7 @@ def build_complete_post_html(verified_en, translations, thumb_url):
         thumb_block = f"""
         <figure style="margin:0 0 18px 0; text-align:center;">
             <img src="{thumb_url}" alt="{verified_en['seo_title']}" width="1200" height="675"
-                 style="width:100%; height:auto; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.08);" />
+                 style="width:100%; height:auto; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,0.14);" />
         </figure>
         """
 
@@ -804,7 +973,7 @@ def publish_to_blogger(access_token, title, html_content, labels):
 
 
 # ==========================================
-# 9. MAIN EXECUTION LOOP (દરેક ન્યૂઝની અલગ પોસ્ટ)
+# 9. MAIN EXECUTION LOOP
 # ==========================================
 def main():
     history = load_history()
@@ -859,8 +1028,8 @@ def main():
 
             slug_id = hashlib.md5(art["url"].encode("utf-8")).hexdigest()[:10]
             thumb_url = create_custom_thumbnail(
-                verified_en.get("thumbnail_headline", verified_en["seo_title"][:55]),
-                verified_en.get("category_badge", "MARKET NEWS"),
+                verified_en.get("thumbnail_headline", verified_en["seo_title"][:50]),
+                verified_en.get("category_badge", "MARKET BREAKING"),
                 slug_id,
                 theme_index=posted_today
             )
