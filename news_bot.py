@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import html
 import json
 import time
 import random
@@ -21,28 +22,35 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 # ==========================================
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
-CLIENT_ID = os.environ.get("CLIENT_ID", "").strip()
-CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "").strip()
-REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN", "").strip()
-BLOG_ID = os.environ.get("BLOG_ID", "6996150531679127159").strip()
-BLOG_BASE_URL = os.environ.get("BLOG_BASE_URL", "https://marketmunafa.blogspot.com").strip()
+CLIENT_ID = os.environ.get("CLIENT_ID", "").strip('"\' ')
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "").strip('"\' ')
+REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN", "").strip('"\' ')
+BLOG_ID = os.environ.get("BLOG_ID", "6996150531679127159").strip('"\' ')
+BLOG_BASE_URL = os.environ.get("BLOG_BASE_URL", "https://marketmunafa.blogspot.com").strip('"\' ').rstrip("/")
 
 RAW_GEMINI_KEYS = (
-    os.environ.get("GEMINI_API_KEYS", "") + "," + os.environ.get("GEMINI_API_KEY", "")
+    os.environ.get("GEMINI_API_KEYS", "")
+    + ","
+    + os.environ.get("GEMINI_API_KEY", "")
+    + ","
+    + os.environ.get("GEMINI_API_KEY_1", "")
+    + ","
+    + os.environ.get("GEMINI_API_KEY_2", "")
 )
-GEMINI_KEYS = [
-    k.strip() for k in re.split(r"[\s,;]+", RAW_GEMINI_KEYS) if len(k.strip()) > 10
-]
-
-PRIMARY_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
-MODEL_FALLBACKS = list(dict.fromkeys([
-    PRIMARY_MODEL,
-    "gemini-3.5-flash-lite",
-    "gemini-3.0-flash"
+GEMINI_KEYS = list(dict.fromkeys([
+    k.strip('"\' ') for k in re.split(r"[\s,;]+", RAW_GEMINI_KEYS) if len(k.strip('"\' ')) > 10
 ]))
 
-MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN", "3"))
-DAILY_MAX_POSTS = int(os.environ.get("DAILY_MAX_POSTS", "20"))
+PRIMARY_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip('"\' ')
+MODEL_FALLBACKS = list(dict.fromkeys([
+    PRIMARY_MODEL,
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]))
+
+MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN", "2"))
+DAILY_MAX_POSTS = int(os.environ.get("DAILY_MAX_POSTS", "6"))
 MAX_ARTICLE_AGE_HOURS = int(os.environ.get("MAX_ARTICLE_AGE_HOURS", "12"))
 
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
@@ -55,19 +63,41 @@ AUTHOR_IMAGE_CANDIDATES = [
     "1001185905.png",
     "author.jpg",
     "author.jpeg",
-    "1001181954.jpg"
+    "1001181954.jpg",
 ]
 
 THUMBNAIL_DIR = "thumbnails"
 HISTORY_FILE = "posted_urls.json"
 
+# Strict 8 Approved Blog Categories
+APPROVED_LABELS = [
+    "STOCKS RESULT",
+    "MARKET NEWS",
+    "IPO",
+    "INTRADAY",
+    "TOP 10 STOCKS",
+    "DEBT FREE 10 STOCKS",
+    "GOLD",
+    "SILVER",
+]
+
+LABEL_RULES = {
+    "IPO": re.compile(r"\b(ipo|ipos|gmp|grey\s*market|listing\s*(gain|price|date)|allotment|sme\s*ipo|drhp|rhp|public\s*issue)\b", re.I),
+    "INTRADAY": re.compile(r"\b(intraday|intra-day|buy\s*today|breakout|nifty\s*levels?|bank\s*nifty|btst|pivot|support|resistance)\b", re.I),
+    "DEBT FREE 10 STOCKS": re.compile(r"\b(debt[- ]?free|low[- ]?debt|zero[- ]?debt|debt\s*to\s*equity)\b", re.I),
+    "TOP 10 STOCKS": re.compile(r"\b(top\s*\d+|best\s*stocks?|stocks?\s*to\s*watch|top\s*picks?|multibagger|highest\s*dii)\b", re.I),
+    "GOLD": re.compile(r"\b(gold|gold\s*prices?|gold\s*rates?|gold\s*loans?|gold\s*etf|mcx\s*gold|sgb|bullion|24k|22k)\b", re.I),
+    "SILVER": re.compile(r"\b(silver|mcx\s*silver|silver\s*prices?|silver\s*rates?|silver\s*crash|silver\s*etf)\b", re.I),
+    "STOCKS RESULT": re.compile(r"\b(q[1-4]|quarterly\s*(results?|earnings?)|corporate\s*earnings?|net\s*profit|pat|revenue\s*growth|ebitda|eps|dividend|financial\s*results?)\b", re.I),
+    "MARKET NEWS": re.compile(r"\b(market|stock|share|sensex|nifty|bse|nse|rbi|fed|economy|crude|oil|rupee|brokerage|fii|dii|tariff|bond)\b", re.I),
+}
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-IN,en;q=0.9"
+    "Accept-Language": "en-IN,en;q=0.9",
 }
 
-# બધી મોટી બિઝનેસ & માર્કેટ વેબસાઈટ્સ (દરેકમાંથી અલગ-અલગ તાજા ન્યૂઝ માટે)
 NEWS_FEEDS = [
     ("Moneycontrol", "https://www.moneycontrol.com/rss/latestnews.xml", False),
     ("Moneycontrol", "https://www.moneycontrol.com/rss/business.xml", False),
@@ -87,19 +117,12 @@ NEWS_FEEDS = [
     ("NYTimes Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", True),
 ]
 
+# Clean 3 Languages (GU + EN + HI) — Fast Indexing & Zero Mixed-Script Glitches
 TARGET_LANGUAGES = [
     ("gu", "ગુજરાતી", "Gujarati"),
     ("hi", "हिन्दी", "Hindi"),
-    ("mr", "मराठी", "Marathi"),
-    ("ta", "தமிழ்", "Tamil"),
-    ("te", "తెలుగు", "Telugu"),
-    ("kn", "ಕನ್ನಡ", "Kannada"),
-    ("bn", "বাংলা", "Bengali"),
-    ("ml", "മലയാളം", "Malayalam"),
-    ("pa", "ਪੰਜਾਬੀ", "Punjabi"),
 ]
 
-# કોઈપણ ભારતીય ભાષાના આંકડા (૦-૯, ०-९, વગેરે) ને ફરજિયાત અંગ્રેજી 0-9 માં ફેરવવા માટે
 INDIC_DIGIT_BASES = [0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66]
 INDIC_DIGIT_TRANS = str.maketrans({
     chr(base + d): str(d)
@@ -110,7 +133,7 @@ INDIC_DIGIT_TRANS = str.maketrans({
 PAYWALL_HINTS = [
     "subscribe to continue", "et prime", "already a subscriber",
     "unlock this article", "sign in to read", "member-only story",
-    "for unlimited access", "create a free account to continue"
+    "for unlimited access", "create a free account to continue",
 ]
 
 AI_CLICHES = [
@@ -118,41 +141,41 @@ AI_CLICHES = [
     "testament to", "navigating the", "ever-evolving", "rollercoaster",
     "pivotal moment", "underscores the importance", "double-edged sword",
     "landscape of", "in today's fast-paced", "it is worth noting",
-    "in summary", "all eyes are on", "only time will tell"
+    "in summary", "all eyes are on", "only time will tell",
 ]
 
 STOPWORDS = {
     "india", "indian", "market", "markets", "stock", "stocks", "share", "shares",
     "price", "prices", "today", "news", "latest", "update", "report", "reports",
     "amid", "after", "over", "with", "from", "into", "that", "this", "will",
-    "says", "said", "what", "next", "check", "here", "details", "know", "more"
+    "says", "said", "what", "next", "check", "here", "details", "know", "more",
 }
 
 THUMB_THEMES = [
     {
         "bg1": (7, 16, 36), "bg2": (18, 48, 92),
         "accent": (250, 204, 21), "accent_text": (15, 23, 42),
-        "badge": (220, 38, 38), "glow": (56, 189, 248), "chart": (34, 197, 94)
+        "badge": (220, 38, 38), "glow": (56, 189, 248), "chart": (34, 197, 94),
     },
     {
         "bg1": (6, 28, 28), "bg2": (15, 76, 72),
         "accent": (253, 224, 71), "accent_text": (15, 23, 42),
-        "badge": (234, 88, 12), "glow": (45, 212, 191), "chart": (74, 222, 128)
+        "badge": (234, 88, 12), "glow": (45, 212, 191), "chart": (74, 222, 128),
     },
     {
         "bg1": (24, 10, 38), "bg2": (68, 22, 105),
         "accent": (251, 191, 36), "accent_text": (15, 23, 42),
-        "badge": (225, 29, 72), "glow": (192, 132, 252), "chart": (56, 189, 248)
+        "badge": (225, 29, 72), "glow": (192, 132, 252), "chart": (56, 189, 248),
     },
     {
         "bg1": (28, 10, 14), "bg2": (96, 20, 28),
         "accent": (250, 204, 21), "accent_text": (15, 23, 42),
-        "badge": (14, 116, 144), "glow": (251, 146, 60), "chart": (250, 204, 21)
+        "badge": (14, 116, 144), "glow": (251, 146, 60), "chart": (250, 204, 21),
     },
     {
         "bg1": (12, 18, 30), "bg2": (30, 41, 75),
         "accent": (56, 189, 248), "accent_text": (15, 23, 42),
-        "badge": (220, 38, 38), "glow": (250, 204, 21), "chart": (52, 211, 153)
+        "badge": (220, 38, 38), "glow": (250, 204, 21), "chart": (52, 211, 153),
     },
 ]
 
@@ -160,21 +183,35 @@ key_index = 0
 
 
 # ==========================================
-# 2. UTILITIES, DEDUP & COPYRIGHT SCANNER
+# 2. UTILITIES, STRICT LABELS & DEDUP
 # ==========================================
 def get_ist_now():
     return datetime.now(IST_TZ)
 
 
-def enforce_english_digits(obj):
-    """તમામ અનુવાદિત ટેક્સ્ટમાંથી કોઈપણ ભારતીય આંકડાને અંગ્રેજી 0-9 માં ફેરવે છે."""
+def clean_str_unescape(obj):
+    """Unescape HTML entities (e.g. &#8377; -> ₹) and convert Indic digits to 0-9."""
     if isinstance(obj, str):
-        return obj.translate(INDIC_DIGIT_TRANS)
+        return html.unescape(obj).translate(INDIC_DIGIT_TRANS).strip()
     if isinstance(obj, list):
-        return [enforce_english_digits(item) for item in obj]
+        return [clean_str_unescape(item) for item in obj]
     if isinstance(obj, dict):
-        return {k: enforce_english_digits(v) for k, v in obj.items()}
+        return {k: clean_str_unescape(v) for k, v in obj.items()}
     return obj
+
+
+def map_to_approved_labels(title, raw_tags=None, max_labels=3):
+    """Strictly maps any title/tags to ONLY the 8 approved blog categories."""
+    combined = f"{title} | {' | '.join(str(t) for t in (raw_tags or []))}"
+    matched = []
+    for cat in ("IPO", "INTRADAY", "DEBT FREE 10 STOCKS", "TOP 10 STOCKS", "GOLD", "SILVER", "STOCKS RESULT", "MARKET NEWS"):
+        if LABEL_RULES[cat].search(combined):
+            matched.append(cat)
+    if "MARKET NEWS" not in matched and len(matched) < max_labels:
+        matched.append("MARKET NEWS")
+    if not matched:
+        matched = ["MARKET NEWS"]
+    return [lb for lb in matched if lb in APPROVED_LABELS][:max_labels]
 
 
 def load_history():
@@ -206,12 +243,12 @@ def clean_html_text(raw):
 
 
 def extract_topic_keywords(title):
-    words = re.findall(r"[a-z0-9]+", title.lower())
+    words = re.findall(r"[a-z0-9]+", str(title).lower())
     return {w for w in words if len(w) > 3 and w not in STOPWORDS}
 
 
 def is_similar_topic(new_title, existing_titles):
-    n1 = re.sub(r"[^a-z0-9\s]", "", new_title.lower()).strip()
+    n1 = re.sub(r"[^a-z0-9\s]", "", str(new_title).lower()).strip()
     kw1 = extract_topic_keywords(new_title)
     for old_t in existing_titles:
         n2 = re.sub(r"[^a-z0-9\s]", "", str(old_t).lower()).strip()
@@ -228,6 +265,51 @@ def is_similar_topic(new_title, existing_titles):
             if overlap >= 0.55 and len(common) >= 2:
                 return True
     return False
+
+
+def ensure_unique_seo_title(proposed_title, existing_titles, primary_topic=""):
+    """If proposed headline clashes with existing blog titles, auto-generate a fresh unique title."""
+    norm = lambda s: " ".join(re.findall(r"[a-z0-9]+", html.unescape(str(s)).lower()))
+    existing_norms = [norm(t) for t in existing_titles]
+
+    def clashes(cand):
+        cn = norm(cand)
+        if not cn or cn in existing_norms:
+            return True
+        for on in existing_norms:
+            if difflib.SequenceMatcher(None, cn, on).ratio() >= 0.72:
+                return True
+        return False
+
+    if not clashes(proposed_title):
+        return proposed_title
+
+    print(f"   🔄 સરખું ટાઇટલ મળ્યું -> નવું યુનિક ટાઇટલ બની રહ્યું છે...")
+    today_tag = get_ist_now().strftime("%d %b %Y")
+    recent_block = "\n".join(f"- {t}" for t in existing_titles[:15])
+    try:
+        prompt = (
+            f"Rewrite this English business news headline into 1 completely fresh, unique, factual headline (55-75 chars) "
+            f"about '{primary_topic or proposed_title}'.\n"
+            f"Original: {proposed_title}\n"
+            f"Must NOT resemble these existing headlines:\n{recent_block}\n"
+            f"Return ONLY the new English headline, no quotes."
+        )
+        new_t = call_gemini(prompt, expect_json=False, max_tokens=120, temperature=0.55)
+        if new_t:
+            new_t = clean_str_unescape(new_t.replace('"', "").splitlines()[0])
+            if len(new_t) >= 20 and not clashes(new_t):
+                print(f"   ✨ નવું યુનિક ટાઇટલ: {new_t}")
+                return new_t[:105]
+    except Exception:
+        pass
+
+    base = proposed_title[:75].strip()
+    for suffix in (f"Key Highlights ({today_tag})", f"Market Impact ({today_tag})", f"Investor Breakdown ({today_tag})"):
+        cand = f"{base} | {suffix}"
+        if not clashes(cand):
+            return cand[:105]
+    return f"{base} ({get_ist_now().strftime('%d %b %I:%M %p')})"
 
 
 def parse_fresh_pub_dt(pub_date_str, title, is_international=False):
@@ -306,7 +388,7 @@ def flatten_article_json(article_json):
         " ".join(article_json.get("key_highlights", [])),
         " ".join(s.get("heading", "") + " " + s.get("body", "") for s in article_json.get("sections", [])),
         " ".join(f.get("q", "") + " " + f.get("a", "") for f in article_json.get("faqs", [])),
-        article_json.get("conclusion", "")
+        article_json.get("conclusion", ""),
     ]
     return " ".join(parts)
 
@@ -323,9 +405,9 @@ def get_blogger_access_token():
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
             "refresh_token": REFRESH_TOKEN,
-            "grant_type": "refresh_token"
+            "grant_type": "refresh_token",
         },
-        timeout=15
+        timeout=15,
     )
     if res.status_code != 200:
         raise RuntimeError(f"OAuth Token Error: {res.text}")
@@ -347,13 +429,13 @@ def fetch_recent_blogger_posts(access_token, limit=50):
     return []
 
 
-def pick_related_internal_links(recent_posts, current_tags, max_links=3):
+def pick_related_internal_links(recent_posts, approved_labels, max_links=3):
     if not recent_posts:
         return []
-    tag_set = {str(t).lower() for t in current_tags}
+    tag_set = {str(t).upper() for t in approved_labels}
     scored = []
     for p in recent_posts[:25]:
-        p_labels = {str(l).lower() for l in p.get("labels", [])}
+        p_labels = {str(l).upper() for l in p.get("labels", [])}
         score = len(tag_set & p_labels)
         scored.append((score, p))
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -491,7 +573,7 @@ def fetch_fresh_diverse_articles(history, live_blog_titles):
                     "url": link,
                     "pub_date": pub_date,
                     "pub_dt": pub_dt,
-                    "full_text": full_text
+                    "full_text": full_text,
                 })
         except Exception:
             continue
@@ -528,18 +610,18 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.45):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
             headers = {
                 "Content-Type": "application/json",
-                "x-goog-api-key": api_key
+                "x-goog-api-key": api_key,
             }
             gen_cfg = {
                 "temperature": temperature,
-                "maxOutputTokens": max_tokens
+                "maxOutputTokens": max_tokens,
             }
             if expect_json:
                 gen_cfg["responseMimeType"] = "application/json"
 
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": gen_cfg
+                "generationConfig": gen_cfg,
             }
 
             try:
@@ -569,12 +651,12 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.45):
 
 
 # ==========================================
-# 6. SHORT-STORY #1 SEO + AUTO-HEAL ENGINE
+# 6. SHORT-STORY SEO + AUTO-HEAL ENGINE
 # ==========================================
 def pass1_extract_pure_facts(article):
     prompt = f"""
 Extract ONLY core verified facts, figures, dates, and exact English company/stock names from the news below into concise bullet notes.
-DO NOT copy prose sentences. Keep every number, percentage, and rupee/dollar amount 100% accurate.
+DO NOT copy prose sentences. Keep every number, percentage, and rupee/dollar amount 100% accurate (use actual ₹ symbol, never HTML codes like &#8377;).
 
 TITLE: {article['title']}
 TEXT:
@@ -585,7 +667,7 @@ Return ONLY valid JSON:
   "primary_topic": "Main company, stock, or economic topic in English",
   "focus_keyword": "High-search Google keyword in English (3-5 words)",
   "stock_and_company_names": ["Exact English Company/Stock Name 1", "Name 2"],
-  "atomic_facts": ["Fact 1 with exact numbers", "Fact 2...", "..."],
+  "atomic_facts": ["Fact 1 with exact numbers", "Fact 2..."],
   "quick_table": [
     {{"label": "Metric/Detail", "value": "Exact Value"}},
     {{"label": "Metric/Detail", "value": "Exact Value"}},
@@ -594,49 +676,48 @@ Return ONLY valid JSON:
   ]
 }}
 """
-    return call_gemini(prompt, expect_json=True, max_tokens=1800, temperature=0.2)
+    return clean_str_unescape(call_gemini(prompt, expect_json=True, max_tokens=1800, temperature=0.2))
 
 
 def pass2_write_natural_short_story(facts_json):
     today_str = get_ist_now().strftime("%B %d, %Y")
     prompt = f"""
-You are a sharp Mumbai business journalist writing a crisp, engaging SHORT STORY for 'MarketMunafa' on {today_str}.
-Using ONLY the verified facts below, write a COMPLETE, 100% ORIGINAL, fast-reading, completely natural human-sounding financial short story (480 to 650 words total) in English.
+You are a sharp Mumbai business journalist writing a crisp, engaging SHORT STORY for 'Market Munafa' on {today_str}.
+Using ONLY the verified facts below, write a COMPLETE, 100% ORIGINAL, fast-reading, natural human-sounding financial short story (480 to 650 words total) in English.
 
-NATURAL SHORT STORY + GOOGLE #1 RANKING RULES:
-1. CRISP & NATURAL VOICE: Short sentences (12-18 words), zero padding, zero filler, crystal clear. No robotic transitions or textbook tone.
+RULES:
+1. CRISP & NATURAL VOICE: Short sentences (12-18 words), zero filler. Use real ₹ symbol (never &#8377;).
 2. STRICTLY BANNED AI CLICHES: Never use "delve", "tapestry", "landscape", "game-changer", "in conclusion", "testament", "ever-evolving", "rollercoaster", "underscores", "pivotal moment", "it is worth noting", "in today's fast-paced", "all eyes are on", "only time will tell".
-3. ENGLISH-ONLY TITLE, THUMBNAIL & TAGS:
-   - `seo_title`: Strictly English, primary keyword near start (55-72 chars), factual, high-CTR, zero clickbait.
+3. STRICTLY CHOOSE `categories` ONLY FROM THIS LIST (1 to 3 items):
+   ["STOCKS RESULT", "MARKET NEWS", "IPO", "INTRADAY", "TOP 10 STOCKS", "DEBT FREE 10 STOCKS", "GOLD", "SILVER"]
+4. ENGLISH TITLE & THUMBNAIL:
+   - `seo_title`: Strictly English, primary keyword near start (55-72 chars), factual, zero clickbait.
    - `thumbnail_headline`: Strictly English, punchy 4-6 words.
    - `category_badge`: Strictly English, 2-3 words (e.g. MARKET SHORT / STOCK ALERT / IPO NEWS).
-   - `tags`: 8-12 strictly English popular + specific stock/sector tags.
-4. SHORT-STORY STRUCTURE:
-   - `intro`: 2 short, punchy paragraphs (70-95 words total).
-   - `quick_table`: 3-4 crisp rows showing exact key numbers at a glance.
-   - `key_highlights`: 4 sharp, scannable one-line takeaways.
-   - `sections`: Exactly 3 tight, high-value H2 sections (90-120 words each):
-     1) The Core Story & Numbers
+5. SHORT-STORY STRUCTURE:
+   - `intro`: 2 short paragraphs (70-95 words total).
+   - `quick_table`: 3-4 crisp rows showing exact key numbers.
+   - `key_highlights`: 4 sharp one-line takeaways.
+   - `sections`: Exactly 3 tight H2 sections (90-120 words each):
+     1) The Core Story and Numbers
      2) Why It Matters Right Now
      3) What Investors Should Track Next
-   - `faqs`: 3 direct, practical "People Also Ask" Google questions with short 2-sentence answers.
-   - `conclusion`: 2 sharp, natural wrap-up sentences (no buy/sell tips).
+   - `faqs`: 3 direct Google "People Also Ask" questions with short 2-sentence answers.
+   - `conclusion`: 2 sharp wrap-up sentences (no buy/sell advice).
 
 VERIFIED FACTS:
 {json.dumps(facts_json, ensure_ascii=False)}
 
-Return ONLY valid JSON with this exact schema:
+Return ONLY valid JSON:
 {{
-  "seo_title": "Keyword-first crisp English Google News headline (55-72 chars)",
+  "seo_title": "Keyword-first crisp English headline (55-72 chars)",
   "focus_keyword": "Primary English search keyword",
-  "stock_and_company_names": ["Exact English Company/Stock Name 1", "..."],
+  "stock_and_company_names": ["Exact English Company/Stock Name 1"],
   "thumbnail_headline": "Punchy 4-6 word English headline for thumbnail",
-  "category_badge": "2-3 word English badge e.g. MARKET SHORT / STOCK ALERT",
-  "meta_description": "Crisp 140-155 char English meta description with focus keyword",
-  "tags": ["Tag1", "Tag2", "..."],
-  "quick_table": [
-    {{"label": "Key Parameter", "value": "Exact Value"}}
-  ],
+  "category_badge": "2-3 word English badge",
+  "meta_description": "Crisp 140-150 char English meta description with focus keyword",
+  "categories": ["MARKET NEWS"],
+  "quick_table": [{{"label": "Key Parameter", "value": "Exact Value"}}],
   "intro": "2 short punchy opening paragraphs.",
   "key_highlights": ["Point 1", "Point 2", "Point 3", "Point 4"],
   "sections": [
@@ -645,14 +726,14 @@ Return ONLY valid JSON with this exact schema:
     {{"heading": "H2 Heading 3", "body": "1-2 tight natural paragraphs"}}
   ],
   "faqs": [
-    {{"q": "User search question 1?", "a": "Direct 2-sentence answer."}},
-    {{"q": "User search question 2?", "a": "Direct 2-sentence answer."}},
-    {{"q": "User search question 3?", "a": "Direct 2-sentence answer."}}
+    {{"q": "Question 1?", "a": "Direct 2-sentence answer."}},
+    {{"q": "Question 2?", "a": "Direct 2-sentence answer."}},
+    {{"q": "Question 3?", "a": "Direct 2-sentence answer."}}
   ],
   "conclusion": "2 sharp closing sentences."
 }}
 """
-    return call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.55)
+    return clean_str_unescape(call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.55))
 
 
 def pass3_copyright_humanizer_with_autoheal(draft_json, article):
@@ -662,25 +743,25 @@ def pass3_copyright_humanizer_with_autoheal(draft_json, article):
 
     audit_alerts = []
     if overlaps:
-        audit_alerts.append(f"REWRITE REQUIRED: Rephrase sentences containing these source overlaps in completely fresh everyday words: {overlaps}")
+        audit_alerts.append(f"REWRITE REQUIRED: Rephrase sentences containing these source overlaps in completely fresh words: {overlaps}")
     if cliches:
         audit_alerts.append(f"REMOVE AI CLICHES: Replace these stiff phrases with natural journalism: {cliches}")
     alert_text = "\n".join(audit_alerts) if audit_alerts else "Polish to sound 100% like an authentic, crisp human-written short story."
 
     prompt = f"""
-You are the Chief Editor and Copyright Compliance Officer at MarketMunafa.
-Audit and polish this SHORT STORY JSON against the source for 100% originality, natural human flow, factual accuracy, and Google #1 SEO.
+You are the Chief Editor and Copyright Compliance Officer at Market Munafa.
+Audit and polish this SHORT STORY JSON against the source for 100% originality, natural human flow, and factual accuracy.
 
 {alert_text}
 
 RULES:
-- ZERO copied sentences (7+ words) from the source. Express figures and facts in fresh phrasing.
-- Keep it tight, crisp, and natural (480-650 words).
-- Keep all numbers and facts 100% accurate to the source. No buy/sell advice.
-- Keep seo_title, thumbnail_headline, category_badge, and tags strictly in English.
-- Keep all 3 sections, quick_table, 4 highlights, 3 FAQs, and conclusion complete.
+- ZERO copied sentences (7+ words) from the source.
+- Keep it tight, crisp, and natural (480-650 words). Use real ₹ symbol (never &#8377;).
+- Keep all numbers and facts 100% accurate. No buy/sell advice.
+- Keep seo_title, thumbnail_headline, category_badge strictly in English.
+- Keep `categories` strictly from: ["STOCKS RESULT", "MARKET NEWS", "IPO", "INTRADAY", "TOP 10 STOCKS", "DEBT FREE 10 STOCKS", "GOLD", "SILVER"].
 
-ORIGINAL SOURCE (fact & anti-copy check only):
+ORIGINAL SOURCE:
 {article['full_text'][:3500]}
 
 DRAFT JSON:
@@ -688,7 +769,7 @@ DRAFT JSON:
 
 Return ONLY the final polished JSON in the exact same schema.
 """
-    verified = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.35)
+    verified = clean_str_unescape(call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.35))
 
     if not verified.get("seo_title") or len(verified.get("sections", [])) < 3:
         raise ValueError("Short story incomplete after audit.")
@@ -698,13 +779,13 @@ Return ONLY the final polished JSON in the exact same schema.
         print(f"   🩹 Auto-healing {len(remaining_overlaps)} overlapping phrase(s)...")
         heal_prompt = f"""
 The JSON article below still shares these exact phrases with the source: {remaining_overlaps}
-Rewrite ONLY the sentences containing those phrases using completely different sentence structure and fresh natural wording while preserving the exact numbers/facts.
+Rewrite ONLY the sentences containing those phrases using fresh natural wording while preserving exact numbers/facts.
 Return ONLY the updated complete JSON in the exact same schema.
 
 JSON TO FIX:
 {json.dumps(verified, ensure_ascii=False)}
 """
-        verified = call_gemini(heal_prompt, expect_json=True, max_tokens=3072, temperature=0.4)
+        verified = clean_str_unescape(call_gemini(heal_prompt, expect_json=True, max_tokens=3072, temperature=0.4))
         remaining_overlaps = find_copied_phrases(article["full_text"], flatten_article_json(verified), ngram_size=8)
         if len(remaining_overlaps) > 2:
             raise ValueError(f"Copyright gate rejected after auto-heal: {remaining_overlaps[:3]}")
@@ -714,7 +795,7 @@ JSON TO FIX:
 
 
 def translate_article_to_language(verified_en, lang_name):
-    """બોડીનો અનુવાદ જે-તે ભારતીય ભાષામાં કરશે, પણ બધા આંકડા (0-9) અને શેર/કંપનીના નામ 100% અંગ્રેજીમાં જ રાખશે."""
+    """Translates body into Gujarati or Hindi while keeping digits (0-9) and company/stock names in English."""
     keep_names = verified_en.get("stock_and_company_names", [])
     payload_to_translate = {
         "quick_table": verified_en.get("quick_table", []),
@@ -722,32 +803,32 @@ def translate_article_to_language(verified_en, lang_name):
         "key_highlights": verified_en["key_highlights"],
         "sections": verified_en["sections"],
         "faqs": verified_en["faqs"],
-        "conclusion": verified_en["conclusion"]
+        "conclusion": verified_en["conclusion"],
     }
     prompt = f"""
-Translate this financial SHORT STORY JSON into natural, fluent, contemporary {lang_name} used by modern Indian stock market readers.
+Translate this financial SHORT STORY JSON into natural, fluent, contemporary {lang_name} used by Indian stock market readers.
 
-STRICT ENGLISH-PRESERVATION RULES (MUST FOLLOW 100%):
-1. NUMBERS MUST STAY IN ENGLISH DIGITS (0-9): Write EVERY single number, price, percentage, date, year, and figure strictly using standard English Arabic numerals (0, 1, 2, 3, 4, 5, 6, 7, 8, 9) — e.g., ₹1,250, 15.4%, 2026, Q2, FY27, $280 million. NEVER use native script digits (no ૦-૯, ०-९, ০-৯, etc.).
-2. COMPANY, STOCK & SHARE NAMES MUST STAY IN ENGLISH SCRIPT: Keep ALL company names, stock/share names, brokerage names, indices, tickers, and financial institutions strictly in English Latin letters (e.g., Tata Motors, HDFC Bank, Reliance Industries, Nifty 50, Sensex, BSE, NSE, RBI, SEBI, IPO, EBITDA, EPS, PAT, MCX, {keep_names}). NEVER transliterate company or share names into {lang_name} script.
-3. NATURAL CONTEMPORARY {lang_name}: Translate all surrounding sentences, explanations, headings, table labels, highlights, FAQs, and conclusion into warm, crisp, natural journalistic {lang_name}. Never skip or shorten any paragraph.
-4. Preserve the exact JSON keys and structure.
+STRICT RULES (MUST FOLLOW 100%):
+1. TRANSLATE EVERY HEADING, TABLE LABEL, FAQ QUESTION, FAQ ANSWER, AND PARAGRAPH into pure {lang_name} script. Do NOT leave section headings or FAQ questions untranslated in English!
+2. ZERO MIXED-SCRIPT TYPOS: Use ONLY {lang_name} script (plus English Latin letters for company/stock names and 0-9 digits). Never mix characters from any other Indian language script.
+3. NUMBERS MUST STAY IN ENGLISH DIGITS (0-9): e.g., ₹1,250, 15.4%, 2026, Q2, FY27. Never use native digits.
+4. COMPANY, STOCK & FINANCIAL NAMES IN ENGLISH: Keep company names, indices, and tickers in English (e.g., Tata Motors, HDFC Bank, Nifty 50, Sensex, BSE, NSE, RBI, SEBI, IPO, EBITDA, EPS, PAT, {keep_names}).
+5. Preserve the exact JSON keys and structure.
 
 INPUT JSON:
 {json.dumps(payload_to_translate, ensure_ascii=False)}
 
 Return ONLY valid JSON.
 """
-    translated = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.32)
+    translated = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.3)
     if not translated.get("sections") or len(translated["sections"]) < len(verified_en["sections"]):
         raise ValueError(f"{lang_name} translation incomplete.")
 
-    # Python લેવલ પર પણ ખાતરી કરી લો કે એક પણ ભારતીય આંકડો ન રહી જાય
-    return enforce_english_digits(translated)
+    return clean_str_unescape(translated)
 
 
 # ==========================================
-# 7. PRO TV-NEWS STUDIO THUMBNAIL ENGINE (ENGLISH)
+# 7. PRO TV-NEWS STUDIO THUMBNAIL ENGINE
 # ==========================================
 def load_author_photo():
     if AUTHOR_IMAGE_URL:
@@ -796,7 +877,7 @@ def get_font(size, bold=True):
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
         "arialbd.ttf",
-        "arial.ttf"
+        "arial.ttf",
     ]
     for path in font_candidates:
         if os.path.exists(path):
@@ -832,7 +913,7 @@ def draw_stock_chart_bg(canvas, th, seed_str):
         odraw.line([(cx, wick_top), (cx, wick_bot)], fill=color, width=3)
         odraw.rounded_rectangle(
             [cx - 9, base_y - body_h // 2, cx + 9, base_y + body_h // 2],
-            radius=3, fill=color
+            radius=3, fill=color,
         )
         points.append((cx, base_y - 20))
 
@@ -924,24 +1005,23 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     draw = ImageDraw.Draw(canvas)
     draw.rectangle([0, 0, W, 9], fill=(*th["accent"], 255))
 
-    # થમ્બનેલ પર માત્ર અંગ્રેજી બેજ અને અંગ્રેજી હેડલાઈન જ આવશે
     badge = re.sub(r"[^A-Za-z0-9\s\-&]", "", str(badge_text or "MARKET SHORT")).strip().upper()[:24] or "MARKET SHORT"
     badge_font = get_font(25, bold=True)
     tb = draw.textbbox((0, 0), badge, font=badge_font)
     badge_w = (tb[2] - tb[0]) + 72
-    draw.rounded_rectangle([52, 46, 52 + badge_w, 98], radius=10, fill=(*th["badge"], 255))
-    draw.ellipse([72, 64, 88, 80], fill=(255, 255, 255, 255))
-    draw.text((100, 56), badge, font=badge_font, fill=(255, 255, 255, 255))
+    draw.rounded_rectangle([64, 46, 64 + badge_w, 98], radius=10, fill=(*th["badge"], 255))
+    draw.ellipse([84, 64, 100, 80], fill=(255, 255, 255, 255))
+    draw.text((112, 56), badge, font=badge_font, fill=(255, 255, 255, 255))
 
     clean_hl = " ".join(re.sub(r"[^\x20-\x7E₹]", "", str(headline)).split()).upper()
-    title_font = get_font(56, bold=True)
+    title_font = get_font(52, bold=True)
     wrapped = textwrap.wrap(clean_hl, width=18)[:4]
     if len(wrapped) <= 2:
-        title_font = get_font(62, bold=True)
+        title_font = get_font(58, bold=True)
         wrapped = textwrap.wrap(clean_hl, width=16)[:3]
 
     y_pos = 132
-    line_step = 86 if len(wrapped) <= 3 else 78
+    line_step = 84 if len(wrapped) <= 3 else 76
 
     for idx, line in enumerate(wrapped):
         bbox_l = draw.textbbox((0, 0), line, font=title_font)
@@ -950,17 +1030,17 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
 
         if idx == 0:
             draw.rounded_rectangle(
-                [46, y_pos - 6, 46 + lw + 32, y_pos + lh + 18],
-                radius=10, fill=(*th["accent"], 255)
+                [58, y_pos - 6, 58 + lw + 32, y_pos + lh + 18],
+                radius=10, fill=(*th["accent"], 255),
             )
-            draw.text((62, y_pos), line, font=title_font, fill=(*th["accent_text"], 255))
+            draw.text((74, y_pos), line, font=title_font, fill=(*th["accent_text"], 255))
             y_pos += line_step + 12
         else:
-            draw.text((57, y_pos + 4), line, font=title_font, fill=(0, 0, 0, 220))
+            draw.text((69, y_pos + 4), line, font=title_font, fill=(0, 0, 0, 220))
             draw.text(
-                (52, y_pos), line, font=title_font,
+                (64, y_pos), line, font=title_font,
                 fill=(255, 255, 255, 255),
-                stroke_width=2, stroke_fill=(0, 0, 0, 230)
+                stroke_width=2, stroke_fill=(0, 0, 0, 230),
             )
             y_pos += line_step
 
@@ -977,7 +1057,7 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     draw.text(
         (328, bar_y + 21),
         f"STOCK MARKET & BUSINESS SHORT   •   {date_str}",
-        font=meta_font, fill=(226, 232, 240, 255)
+        font=meta_font, fill=(226, 232, 240, 255),
     )
 
     filename = f"thumb_{slug_id}.jpg"
@@ -1000,18 +1080,22 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
 
 
 # ==========================================
-# 8. GUJARATI-FIRST HTML + ENGLISH TITLE/NUMBERS/TAGS
+# 8. CLEAN 3-LANGUAGE HTML (THEME-SYNCED TOC & READ TIME)
 # ==========================================
 def build_language_block(lang_data, lang_code, is_default=False):
     display_style = "block" if is_default else "none"
+    hidden_attr = "" if is_default else ' hidden="hidden"'
 
-    hl_heading = "⚡ મુખ્ય મુદ્દાઓ (Key Highlights)" if lang_code == "gu" else "⚡ Quick Story Highlights"
-    faq_heading = "❓ વારંવાર પૂછાતા પ્રશ્નો (FAQ)" if lang_code == "gu" else "❓ Quick FAQs"
-    bottom_lbl = "નિષ્કર્ષ:" if lang_code == "gu" else "Bottom Line:"
+    ui_labels = {
+        "gu": ("⚡ મુખ્ય મુદ્દાઓ (Key Highlights)", "❓ વારંવાર પૂછાતા પ્રશ્નો (FAQ)", "નિષ્કર્ષ:"),
+        "hi": ("⚡ प्रमुख बिंदु (Key Highlights)", "❓ अक्सर पूछे जाने वाले प्रश्न (FAQ)", "निष्कर्ष:"),
+        "en": ("⚡ Quick Story Highlights", "❓ Quick FAQs", "Bottom Line:"),
+    }
+    hl_heading, faq_heading, bottom_lbl = ui_labels.get(lang_code, ui_labels["en"])
 
     intro_html = "".join(
-        f"<p style='line-height:1.85; margin-bottom:14px;'>{p.strip()}</p>"
-        for p in lang_data.get("intro", "").split("\n") if p.strip()
+        f"<p style='line-height:1.85; margin-bottom:14px;'>{html.escape(p.strip())}</p>"
+        for p in str(lang_data.get("intro", "")).split("\n") if p.strip()
     )
 
     qtable_rows = ""
@@ -1019,8 +1103,8 @@ def build_language_block(lang_data, lang_code, is_default=False):
         if row.get("label") and row.get("value"):
             qtable_rows += f"""
             <tr>
-              <td style="padding:10px 12px; border:1px solid #cbd5e1; font-weight:700; background:#f8fafc; width:38%; color:#0f172a;">{row['label']}</td>
-              <td style="padding:10px 12px; border:1px solid #cbd5e1; color:#1e293b;">{row['value']}</td>
+              <td style="padding:10px 12px; border:1px solid #cbd5e1; font-weight:700; background:#f8fafc; width:38%; color:#0f172a;">{html.escape(str(row['label']))}</td>
+              <td style="padding:10px 12px; border:1px solid #cbd5e1; color:#1e293b;">{html.escape(str(row['value']))}</td>
             </tr>
             """
     qtable_html = ""
@@ -1034,19 +1118,19 @@ def build_language_block(lang_data, lang_code, is_default=False):
         """
 
     highlights_html = "".join(
-        f"<li style='margin-bottom:7px;'>{item}</li>"
+        f"<li style='margin-bottom:7px;'>{html.escape(str(item))}</li>"
         for item in lang_data.get("key_highlights", [])
     )
 
     sections_html = ""
     for sec in lang_data.get("sections", []):
         body_ps = "".join(
-            f"<p style='line-height:1.85; margin-bottom:13px;'>{p.strip()}</p>"
-            for p in sec.get("body", "").split("\n") if p.strip()
+            f"<p style='line-height:1.85; margin-bottom:13px;'>{html.escape(p.strip())}</p>"
+            for p in str(sec.get("body", "")).split("\n") if p.strip()
         )
         sections_html += f"""
         <h2 style="color:#0f172a; font-size:20px; margin-top:24px; margin-bottom:10px; border-left:4px solid #1d4ed8; padding-left:10px;">
-            {sec.get('heading', '')}
+            {html.escape(str(sec.get('heading', '')))}
         </h2>
         {body_ps}
         """
@@ -1055,13 +1139,13 @@ def build_language_block(lang_data, lang_code, is_default=False):
     for faq in lang_data.get("faqs", []):
         faqs_html += f"""
         <div style="margin-bottom:11px; padding:12px 14px; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0;">
-            <h3 style="margin:0 0 5px 0; font-size:15.5px; font-weight:700; color:#0f172a;">Q: {faq.get('q', '')}</h3>
-            <p style="margin:0; color:#334155; line-height:1.68;">{faq.get('a', '')}</p>
+            <h3 style="margin:0 0 5px 0; font-size:15.5px; font-weight:700; color:#0f172a;">Q: {html.escape(str(faq.get('q', '')))}</h3>
+            <p style="margin:0; color:#334155; line-height:1.68;">{html.escape(str(faq.get('a', '')))}</p>
         </div>
         """
 
     return f"""
-    <div class="mm-lang-pane" data-lang="{lang_code}" style="display:{display_style};">
+    <div class="mm-lang-pane" data-lang="{lang_code}" lang="{lang_code}" style="display:{display_style};"{hidden_attr}>
         <div style="font-size:16px; color:#1e293b;">{intro_html}</div>
 
         {qtable_html}
@@ -1081,43 +1165,48 @@ def build_language_block(lang_data, lang_code, is_default=False):
         </div>
 
         <div style="margin-top:20px; padding:14px 16px; background:#f0fdf4; border-left:4px solid #16a34a; border-radius:8px;">
-            <p style="margin:0; line-height:1.72; color:#14532d;"><strong>{bottom_lbl}</strong> {lang_data.get('conclusion', '')}</p>
+            <p style="margin:0; line-height:1.72; color:#14532d;"><strong>{bottom_lbl}</strong> {html.escape(str(lang_data.get('conclusion', '')))}</p>
         </div>
     </div>
     """
 
 
-def build_complete_post_html(verified_en, translations, thumb_url, related_posts):
+def build_complete_post_html(verified_en, translations, thumb_url, related_posts, final_title):
     now_ist = get_ist_now()
     ist_str = now_ist.strftime("%B %d, %Y | %I:%M %p IST")
     iso_str = now_ist.isoformat()
-    uid = hashlib.md5(verified_en["seo_title"].encode("utf-8")).hexdigest()[:8]
+    uid = hashlib.md5(final_title.encode("utf-8")).hexdigest()[:8]
 
-    news_schema = {
-        "@context": "https://schema.org",
-        "@type": "NewsArticle",
-        "headline": verified_en["seo_title"],
-        "description": verified_en.get("meta_description", verified_en["seo_title"]),
-        "image": [thumb_url] if thumb_url else [],
-        "datePublished": iso_str,
-        "dateModified": iso_str,
-        "author": {"@type": "Organization", "name": "MarketMunafa Editorial Desk", "url": BLOG_BASE_URL},
-        "publisher": {"@type": "Organization", "name": "MarketMunafa", "url": BLOG_BASE_URL}
-    }
-    faq_schema = {
-        "@context": "https://schema.org",
-        "@type": "FAQPage",
-        "mainEntity": [
-            {
-                "@type": "Question",
-                "name": f.get("q", ""),
-                "acceptedAnswer": {"@type": "Answer", "text": f.get("a", "")}
-            }
-            for f in verified_en.get("faqs", [])
-        ]
-    }
+    meta_desc = clean_str_unescape(verified_en.get("meta_description") or final_title)
+    if len(meta_desc) > 152:
+        meta_desc = meta_desc[:149].rsplit(" ", 1)[0] + "..."
 
-    # ડિફોલ્ટ પહેલા ગુજરાતી ખુલશે, પછી વાચક બટન દબાવી ભાષા બદલી શકશે
+    schema_bundle = [
+        {
+            "@context": "https://schema.org",
+            "@type": "NewsArticle",
+            "headline": clean_str_unescape(final_title),
+            "description": meta_desc,
+            "image": [thumb_url] if thumb_url else [],
+            "datePublished": iso_str,
+            "dateModified": iso_str,
+            "author": {"@type": "Organization", "name": "Market Munafa", "url": BLOG_BASE_URL},
+            "publisher": {"@type": "Organization", "name": "Market Munafa", "url": BLOG_BASE_URL},
+        },
+        {
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            "mainEntity": [
+                {
+                    "@type": "Question",
+                    "name": clean_str_unescape(f.get("q", "")),
+                    "acceptedAnswer": {"@type": "Answer", "text": clean_str_unescape(f.get("a", ""))},
+                }
+                for f in verified_en.get("faqs", [])
+            ],
+        },
+    ]
+
     default_lang = "gu" if "gu" in translations else "en"
 
     lang_buttons = []
@@ -1132,29 +1221,24 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
         f"<button type='button' class='{en_cls}' onclick=\"mmSwitchPostLang('{uid}','en',this)\">English</button>"
     )
 
-    for code, native_label, _ in TARGET_LANGUAGES:
-        if code == "gu":
-            continue
-        if code in translations:
-            lang_buttons.append(
-                f"<button type='button' class='mm-lbtn' onclick=\"mmSwitchPostLang('{uid}','{code}',this)\">{native_label}</button>"
-            )
+    if "hi" in translations:
+        lang_buttons.append(
+            f"<button type='button' class='mm-lbtn' onclick=\"mmSwitchPostLang('{uid}','hi',this)\">हिन्दी</button>"
+        )
 
     panes_html = ""
     if "gu" in translations:
         panes_html += build_language_block(translations["gu"], "gu", is_default=(default_lang == "gu"))
     panes_html += build_language_block(verified_en, "en", is_default=(default_lang == "en"))
-    for code, _, _ in TARGET_LANGUAGES:
-        if code == "gu":
-            continue
-        if code in translations:
-            panes_html += build_language_block(translations[code], code, is_default=False)
+    if "hi" in translations:
+        panes_html += build_language_block(translations["hi"], "hi", is_default=False)
 
+    safe_title_attr = html.escape(final_title, quote=True)
     thumb_block = ""
     if thumb_url:
         thumb_block = f"""
         <figure style="margin:0 0 18px 0; text-align:center;">
-            <img src="{thumb_url}" alt="{verified_en['seo_title']}" title="{verified_en['seo_title']}" width="1200" height="675"
+            <img src="{html.escape(thumb_url, quote=True)}" alt="{safe_title_attr}" title="{safe_title_attr}" width="1200" height="675" fetchpriority="high"
                  style="width:100%; height:auto; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,0.14);" />
         </figure>
         """
@@ -1162,17 +1246,17 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
     related_html = ""
     if related_posts:
         links_li = "".join(
-            f"<li style='margin-bottom:7px;'><a href='{rp['url']}' style='color:#1d4ed8; font-weight:600; text-decoration:none;'>{rp['title']}</a></li>"
+            f"<li style='margin-bottom:7px;'><a href='{html.escape(rp['url'], quote=True)}' style='color:#1d4ed8; font-weight:600; text-decoration:none;'>{html.escape(rp['title'])}</a></li>"
             for rp in related_posts
         )
         related_html = f"""
         <div style="margin-top:24px; padding:15px 17px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px;">
-            <h3 style="margin:0 0 9px 0; font-size:16.5px; color:#0f172a;">🔗 Also Read on MarketMunafa</h3>
+            <h3 style="margin:0 0 9px 0; font-size:16.5px; color:#0f172a;">🔗 Also Read on Market Munafa</h3>
             <ul style="margin:0; padding-left:20px; line-height:1.68;">{links_li}</ul>
         </div>
         """
 
-    html = f"""
+    post_html_out = f"""
 <article id="mm-post-{uid}" style="font-family:'Noto Sans Gujarati','Noto Sans Devanagari','Segoe UI',Roboto,Arial,sans-serif; max-width:860px; margin:0 auto;">
   <style>
     #mm-post-{uid} .mm-langbar {{
@@ -1193,7 +1277,7 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
   {thumb_block}
 
   <p style="font-size:13.5px; color:#64748b; margin-bottom:12px;">
-    📅 Published on: {ist_str} | By <strong>MarketMunafa Editorial Desk</strong> • 2 min read
+    📅 Published on: {ist_str} | By <strong>Market Munafa Editorial Desk</strong>
   </p>
 
   <div class="mm-langbar">
@@ -1207,17 +1291,18 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
 
   <hr style="margin:24px 0 12px 0; border:none; border-top:1px solid #e2e8f0;" />
   <p style="font-size:12.5px; color:#64748b; line-height:1.6;">
-    <strong>Disclaimer:</strong> This short report is prepared by the MarketMunafa Editorial Desk for informational and educational purposes only and does not constitute investment advice. Stock market investments are subject to market risks; please consult a SEBI-registered advisor before investing.
+    <strong>Disclaimer:</strong> This report is prepared by the Market Munafa Editorial Desk for informational and educational purposes only and does not constitute investment advice. Stock market investments are subject to market risks; please consult a SEBI-registered advisor before investing.
   </p>
 
-  <script type="application/ld+json">{json.dumps(news_schema, ensure_ascii=False)}</script>
-  <script type="application/ld+json">{json.dumps(faq_schema, ensure_ascii=False)}</script>
+  <script type="application/ld+json">{json.dumps(schema_bundle, ensure_ascii=False)}</script>
   <script>
     function mmSwitchPostLang(uid, code, btn) {{
       var root = document.getElementById('mm-post-' + uid);
       if (!root) return;
       root.querySelectorAll('.mm-lang-pane').forEach(function(p) {{
-        p.style.display = (p.getAttribute('data-lang') === code) ? 'block' : 'none';
+        var match = (p.getAttribute('data-lang') === code);
+        p.style.display = match ? 'block' : 'none';
+        p.hidden = !match;
       }});
       root.querySelectorAll('.mm-lbtn').forEach(function(b) {{
         b.classList.remove('active');
@@ -1227,37 +1312,33 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
   </script>
 </article>
 """
-    return html.strip()
+    return post_html_out.strip(), meta_desc
 
 
-def publish_to_blogger(access_token, title, html_content, labels):
-    # બ્લોગર ટાઇટલ અને ટૅગ્સ 100% અંગ્રેજીમાં જ રહેશે
-    clean_title = " ".join(re.sub(r"[^\x20-\x7E₹]", "", str(title)).split())
-    clean_labels = []
-    total_chars = 0
-    for lbl in labels:
-        lbl = re.sub(r"[^A-Za-z0-9\s\-&]", "", str(lbl)).strip()[:28]
-        if lbl and lbl not in clean_labels and (total_chars + len(lbl) + 1) <= 185:
-            clean_labels.append(lbl)
-            total_chars += len(lbl) + 1
-    if "MARKET NEWS" not in clean_labels:
-        clean_labels.insert(0, "MARKET NEWS")
+def publish_to_blogger(access_token, title, html_content, approved_labels, meta_desc):
+    clean_title = " ".join(re.sub(r"[^\x20-\x7E₹]", "", clean_str_unescape(title)).split())[:115]
+    safe_labels = [lb for lb in approved_labels if lb in APPROVED_LABELS][:3] or ["MARKET NEWS"]
 
     api_url = f"https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts/"
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     payload = {
         "kind": "blogger#post",
         "title": clean_title,
         "content": html_content,
-        "labels": clean_labels[:12]
+        "labels": safe_labels,
+        "customMetaData": meta_desc,
     }
     res = requests.post(api_url, headers=headers, json=payload, timeout=25)
+    if res.status_code == 400 and "customMetaData" in res.text:
+        payload.pop("customMetaData", None)
+        res = requests.post(api_url, headers=headers, json=payload, timeout=25)
+
     if res.status_code in (200, 201):
         post_url = res.json().get("url", "")
-        print(f"   ✅ Published: {clean_title} -> {post_url}")
+        print(f"   ✅ Published: {clean_title} | Labels: {safe_labels} -> {post_url}")
         return post_url
     else:
         print(f"   ❌ Blogger API Error ({res.status_code}): {res.text}")
@@ -1265,7 +1346,7 @@ def publish_to_blogger(access_token, title, html_content, labels):
 
 
 # ==========================================
-# 9. MAIN EXECUTION LOOP (1 WEBSITE = 1 SHORT STORY)
+# 9. MAIN EXECUTION LOOP
 # ==========================================
 def main():
     history = load_history()
@@ -1312,6 +1393,14 @@ def main():
             verified_en = pass3_copyright_humanizer_with_autoheal(draft_en, art)
             time.sleep(2)
 
+            # Auto-ensure unique headline against all recent blog posts
+            final_title = ensure_unique_seo_title(
+                verified_en["seo_title"],
+                live_blog_titles + history["posted_titles"][-50:],
+                primary_topic=facts_json.get("primary_topic", ""),
+            )
+            verified_en["seo_title"] = final_title
+
             translations = {}
             all_langs_ready = True
             for code, native_name, eng_name in TARGET_LANGUAGES:
@@ -1330,37 +1419,46 @@ def main():
                         break
 
             if not all_langs_ready:
-                print("   ⏭️ બધી ભાષા પૂરી ન બની હોવાથી આ પોસ્ટ સ્કિપ કરી.")
+                print("   ⏭️ અનુવાદ પૂરો ન બન્યો હોવાથી આ પોસ્ટ સ્કિપ કરી.")
                 continue
 
             slug_id = hashlib.md5(art["url"].encode("utf-8")).hexdigest()[:10]
             thumb_url = create_custom_thumbnail(
-                verified_en.get("thumbnail_headline", verified_en["seo_title"][:50]),
+                verified_en.get("thumbnail_headline", final_title[:50]),
                 verified_en.get("category_badge", "MARKET SHORT"),
                 slug_id,
-                theme_index=posted_today
+                theme_index=posted_today,
             )
 
-            tags = verified_en.get("tags", ["Stock Market", "Business News"])
-            related_posts = pick_related_internal_links(recent_blog_posts, tags, max_links=3)
-            post_html = build_complete_post_html(verified_en, translations, thumb_url, related_posts)
+            # Strictly map to ONLY the 8 approved categories
+            approved_labels = map_to_approved_labels(
+                final_title,
+                raw_tags=verified_en.get("categories") or verified_en.get("tags") or [],
+            )
+
+            related_posts = pick_related_internal_links(recent_blog_posts, approved_labels, max_links=3)
+            post_html, meta_desc = build_complete_post_html(
+                verified_en, translations, thumb_url, related_posts, final_title
+            )
 
             published_url = publish_to_blogger(
                 access_token=access_token,
-                title=verified_en["seo_title"],
+                title=final_title,
                 html_content=post_html,
-                labels=tags
+                approved_labels=approved_labels,
+                meta_desc=meta_desc,
             )
 
             if published_url:
                 published_count += 1
                 posted_today += 1
                 used_sources_this_run.add(art["source"])
+                live_blog_titles.insert(0, final_title)
                 history["posted_urls"].append(art["url"])
                 history["posted_titles"].append(art["title"])
-                history["posted_titles"].append(verified_en["seo_title"])
+                history["posted_titles"].append(final_title)
                 history["daily_counts"][today_key] = posted_today
-                recent_blog_posts.insert(0, {"title": verified_en["seo_title"], "url": published_url, "labels": tags})
+                recent_blog_posts.insert(0, {"title": final_title, "url": published_url, "labels": approved_labels})
                 save_history(history)
                 time.sleep(5)
 
@@ -1368,7 +1466,7 @@ def main():
             print(f"   ❌ Skipped article: {e}")
             continue
 
-    print(f"\n🎉 Run finished! આજે ({today_key}) કુલ {published_count} અલગ-અલગ વેબસાઈટની નવી Short Story પબ્લિશ થઈ (આજની કુલ: {posted_today}).")
+    print(f"\n🎉 Run finished! આજે ({today_key}) કુલ {published_count} નવી Short Story પબ્લિશ થઈ (આજની કુલ: {posted_today}).")
 
 
 if __name__ == "__main__":
