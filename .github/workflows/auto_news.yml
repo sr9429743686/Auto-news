@@ -2,7 +2,7 @@ name: MarketMunafa Auto News Bot
 
 on:
   schedule:
-    # દર 3 કલાકે (IST મુજબ દિવસમાં 8 વખત, કુલ મહત્તમ 20 પોસ્ટ/દિવસ)
+    # દર 3 કલાકે ચાલશે (દિવસમાં 8 વખત, કુલ મહત્તમ 20 પોસ્ટ/દિવસ)
     - cron: '15 */3 * * *'
   workflow_dispatch:
 
@@ -32,15 +32,16 @@ jobs:
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
           BLOG_ID: ${{ secrets.BLOG_ID }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: "gemini-2.5-flash-lite"
           MAX_POSTS_PER_RUN: "3"
           DAILY_MAX_POSTS: "20"
         run: python news_bot.py
 
-      - name: Save generated thumbnails & history
+      - name: Save posted history
         run: |
           git config --global user.name "MarketMunafa Bot"
           git config --global user.email "bot@marketmunafa.local"
-          git add thumbnails/ posted_urls.json || true
-          git diff --staged --quiet || git commit -m "Auto update thumbnails & posted history"
-          git push
+          git add thumbnails/ posted_urls.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "Update posted news history"
+          git push || true
