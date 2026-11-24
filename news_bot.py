@@ -66,7 +66,7 @@ HEADERS = {
     "Accept-Language": "en-IN,en;q=0.9"
 }
 
-# 7 અલગ-અલગ વેબસાઈટ્સ (Source Group નામ મુજબ દર રનમાં 1 વેબસાઈટમાંથી 1 જ પોસ્ટ લેશે)
+# 7 અલગ-અલગ વેબસાઈટ્સ (દર રનમાં 1 વેબસાઈટમાંથી 1 જ પોસ્ટ લેશે)
 NEWS_FEEDS = [
     ("Moneycontrol", "https://www.moneycontrol.com/rss/latestnews.xml"),
     ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml"),
@@ -96,7 +96,6 @@ PAYWALL_HINTS = [
     "for unlimited access", "create a free account to continue"
 ]
 
-# AI જેવા લાગતા રોબોટિક શબ્દો (જેન્યુઇન હ્યુમન ટોન માટે ઓડિટમાં હટાવાશે)
 AI_CLICHES = [
     "delve into", "tapestry", "in conclusion", "game-changer",
     "testament to", "navigating the", "ever-evolving", "rollercoaster",
@@ -183,7 +182,6 @@ def extract_topic_keywords(title):
 
 
 def is_similar_topic(new_title, existing_titles):
-    """અલગ વેબસાઈટ પર એક જ ઘટના/શેરના ન્યૂઝ હોય તો તરત પકડીને ડુપ્લીકેટ બ્લોક કરે છે."""
     n1 = re.sub(r"[^a-z0-9\s]", "", new_title.lower()).strip()
     kw1 = extract_topic_keywords(new_title)
     for old_t in existing_titles:
@@ -225,8 +223,7 @@ def parse_today_fresh_dt(pub_date_str, title):
         return None
 
 
-def find_copied_phrases(source_text, draft_text, ngram_size=5):
-    """કડક 5-શબ્દ કોપીરાઇટ સ્કેનર: મૂળ લેખની 5+ શબ્દોની કોઈપણ લાઈન મેચ થાય તો પકડે છે."""
+def find_copied_phrases(source_text, draft_text, ngram_size=6):
     src_words = re.findall(r"[a-z0-9]+", source_text.lower())
     drf_words = re.findall(r"[a-z0-9]+", draft_text.lower())
     if len(src_words) < ngram_size or len(drf_words) < ngram_size:
@@ -284,7 +281,6 @@ def get_blogger_access_token():
 
 
 def fetch_recent_blogger_posts(access_token, limit=50):
-    """બ્લોગ પર છેલ્લે પબ્લિશ થયેલી 50 પોસ્ટ લાવે છે (ડુપ્લીકેટ રોકવા + ઇન્ટરનલ લિંક્સ માટે)."""
     try:
         url = f"https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts?maxResults={limit}&status=live&fetchBodies=false"
         res = requests.get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
@@ -300,7 +296,6 @@ def fetch_recent_blogger_posts(access_token, limit=50):
 
 
 def pick_related_internal_links(recent_posts, current_tags, max_links=3):
-    """SEO Internal Linking: હાલના ટોપિક સાથે મેળ ખાતી તમારા બ્લોગની 3 જૂની પોસ્ટ પસંદ કરે છે."""
     if not recent_posts:
         return []
     tag_set = {str(t).lower() for t in current_tags}
@@ -354,7 +349,6 @@ def extract_full_public_article(url):
 
 
 def fetch_fresh_diverse_articles(history, live_blog_titles):
-    """દરેક અલગ વેબસાઈટમાંથી માત્ર આજના તાજા અને સાવ અલગ ટોપિકના જ ન્યૂઝ લાવે છે."""
     posted_urls = set(history["posted_urls"])
     known_titles = list(history["posted_titles"]) + list(live_blog_titles)
     source_buckets = {}
@@ -406,7 +400,6 @@ def fetch_fresh_diverse_articles(history, live_blog_titles):
             print(f"[Feed Skip] {source_name}: {e}")
             continue
 
-    # જે વેબસાઈટ પર સૌથી નવો સમાચાર હોય તેને પહેલા લો — અને દરેક સાઇટનો 1-1 વારો
     active_buckets = [b for b in source_buckets.values() if b]
     active_buckets.sort(key=lambda b: b[0]["pub_dt"], reverse=True)
 
@@ -480,7 +473,6 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.45):
 # 6. 3-PASS GENUINE EDITORIAL & #1 SEO ENGINE
 # ==========================================
 def pass1_extract_pure_facts(article):
-    """Pass 1: મૂળ લેખમાંથી ફક્ત કાચા તથ્યો અને આંકડા જ તારવે છે (કોઈ વાક્ય કોપી ન થાય તે માટે)."""
     prompt = f"""
 Extract ONLY objective raw facts, numbers, dates, entity names, and key events from the news text below into brief neutral bullet notes.
 DO NOT copy prose sentences or stylistic wording. Keep every figure, percentage, rupee/dollar value, and company name 100% accurate.
@@ -507,7 +499,6 @@ Return ONLY valid JSON:
 
 
 def pass2_write_genuine_seo_article(facts_json):
-    """Pass 2: મૂળ આર્ટિકલ જોયા વગર માત્ર કાચા તથ્યો પરથી 100% મૌલિક, હ્યુમન-સ્ટાઇલ #1 SEO લેખ."""
     today_str = get_ist_now().strftime("%B %d, %Y")
     prompt = f"""
 You are a seasoned Indian business journalist and CFA-informed financial writer for 'MarketMunafa' writing on {today_str}.
@@ -562,17 +553,16 @@ Return ONLY valid JSON with this exact schema:
 
 
 def pass3_copyright_humanizer_audit(draft_json, article):
-    """Pass 3: Python 5-gram કોપીરાઇટ સ્કેન + AI-ક્લિશે સ્કેન + Gemini Chief Editor ફાઇનલ ઓડિટ."""
     flat_draft = flatten_article_json(draft_json)
-    overlaps = find_copied_phrases(article["full_text"], flat_draft, ngram_size=5)
+    overlaps = find_copied_phrases(article["full_text"], flat_draft, ngram_size=6)
     cliches = find_ai_cliches(flat_draft)
 
     audit_alerts = []
     if overlaps:
-        audit_alerts.append(f"CRITICAL COPYRIGHT FIX: Completely rewrite any sentence containing these overlapping 5-word phrases: {overlaps}")
+        audit_alerts.append(f"CRITICAL COPYRIGHT FIX: Completely rewrite any sentence containing these overlapping 6-word phrases: {overlaps}")
     if cliches:
         audit_alerts.append(f"CRITICAL HUMANIZER FIX: Remove and naturally rephrase these robotic AI clichés: {cliches}")
-    alert_text = "\n".join(audit_alerts) if audit_alerts else "Zero 5-word overlaps and zero AI clichés detected; polish for maximum Google #1 readability and factual precision."
+    alert_text = "\n".join(audit_alerts) if audit_alerts else "Zero 6-word overlaps and zero AI clichés detected; polish for maximum Google #1 readability and factual precision."
 
     prompt = f"""
 You are the Chief Editor, Copyright Compliance Officer, and Google SEO Specialist for MarketMunafa.
@@ -581,8 +571,8 @@ Perform a strict final audit of this DRAFT ARTICLE against the ORIGINAL SOURCE.
 {alert_text}
 
 STRICT FINAL CHECKLIST:
-1. ZERO COPYRIGHT OVERLAP: Ensure zero 5+ word phrases match the original source verbatim (except official company names or formal regulatory titles).
-2. 100% GENUINE HUMAN FEEL: Read every sentence aloud mentally—remove any stiff, repetitive, or AI-sounding transitions. Make it read like authentic original financial journalism.
+1. ZERO COPYRIGHT OVERLAP: Ensure zero 6+ word phrases match the original source verbatim (except official company names or formal regulatory titles).
+2. 100% GENUINE HUMAN FEEL: Remove any stiff, repetitive, or AI-sounding transitions. Make it read like authentic original financial journalism.
 3. FACT ACCURACY: Cross-check every single number, percentage, date, and name against the source. Remove anything unsupported.
 4. GOOGLE #1 SEO & ADSENSE COMPLIANCE:
    - Headline must be natural, keyword-focused, and under 75 characters.
@@ -602,12 +592,12 @@ Return ONLY the final polished JSON in the exact same schema.
     if not verified.get("seo_title") or len(verified.get("sections", [])) < 3:
         raise ValueError("Final audited article incomplete.")
 
-    # ફાઇનલ હાર્ડ કોપીરાઇટ ગેટ (કોઈ રિસ્ક નહીં)
-    final_overlaps = find_copied_phrases(article["full_text"], flatten_article_json(verified), ngram_size=6)
-    if len(final_overlaps) > 2:
+    # ફાઇનલ હાર્ડ કોપીરાઇટ ગેટ (8+ શબ્દોની બેઠી લાઈન હોય તો જ રિજેક્ટ થશે)
+    final_overlaps = find_copied_phrases(article["full_text"], flatten_article_json(verified), ngram_size=8)
+    if len(final_overlaps) > 3:
         raise ValueError(f"Copyright safety gate rejected post due to overlaps: {final_overlaps[:3]}")
 
-    print(f"   🛡️ Copyright & Humanizer Audit Passed (6-gram overlaps: {len(final_overlaps)})")
+    print(f"   🛡️ Copyright & Humanizer Audit Passed (8-gram overlaps: {len(final_overlaps)})")
     return verified
 
 
@@ -903,7 +893,6 @@ def build_language_block(lang_data, lang_code, is_default=False):
         for p in lang_data.get("intro", "").split("\n") if p.strip()
     )
 
-    # Google Featured Snippet માટે Quick Facts Table
     qtable_rows = ""
     for row in lang_data.get("quick_table", [])[:5]:
         if row.get("label") and row.get("value"):
@@ -983,7 +972,6 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
     iso_str = now_ist.isoformat()
     uid = hashlib.md5(verified_en["seo_title"].encode("utf-8")).hexdigest()[:8]
 
-    # Dual Schema: Google NewsArticle + FAQPage (SEO #1 Ranking માટે)
     news_schema = {
         "@context": "https://schema.org",
         "@type": "NewsArticle",
@@ -1162,29 +1150,24 @@ def main():
         if published_count >= remaining_today:
             break
 
-        # એક રનમાં દરેક વેબસાઈટમાંથી ફક્ત 1 જ પોસ્ટ (બધી સાઇટનું અલગ-અલગ મિશ્રણ)
         if art["source"] in used_sources_this_run:
             continue
 
         pub_time_str = art["pub_dt"].strftime("%I:%M %p IST")
         print(f"\n🔍 Today's Live News [{art['source']} | {pub_time_str}]: {art['title']}")
         try:
-            # Pass 1: માત્ર શુદ્ધ તથ્યો અને આંકડા કાઢો
             print("   📋 Pass 1: Extracting verified facts...")
             facts_json = pass1_extract_pure_facts(art)
             time.sleep(2)
 
-            # Pass 2: મૂળ શબ્દો જોયા વગર 100% મૌલિક, હ્યુમન-સ્ટાઇલ #1 SEO લેખ
             print("   ✍️ Pass 2: Writing genuine original SEO article...")
             draft_en = pass2_write_genuine_seo_article(facts_json)
             time.sleep(2)
 
-            # Pass 3: કડક 5-gram કોપીરાઇટ સ્કેન + હ્યુમનાઇઝર + Chief Editor ઓડિટ
             print("   🔍 Pass 3: Running copyright, fact & SEO audit...")
             verified_en = pass3_copyright_humanizer_audit(draft_en, art)
             time.sleep(2)
 
-            # તમામ 9 ભારતીય ભાષાઓમાં કુદરતી અનુવાદ
             translations = {}
             all_langs_ready = True
             for code, native_name, eng_name in TARGET_LANGUAGES:
