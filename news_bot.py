@@ -43,7 +43,6 @@ MODEL_FALLBACKS = list(dict.fromkeys([
 
 MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN", "3"))
 DAILY_MAX_POSTS = int(os.environ.get("DAILY_MAX_POSTS", "20"))
-# ભારતીય સાઇટ્સ માટે આજના છેલ્લા 12 કલાક (સૌથી નવા પહેલા); ઇન્ટરનેશનલ (NYT) માટે 24 કલાક
 MAX_ARTICLE_AGE_HOURS = int(os.environ.get("MAX_ARTICLE_AGE_HOURS", "12"))
 
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
@@ -99,6 +98,14 @@ TARGET_LANGUAGES = [
     ("ml", "മലയാളം", "Malayalam"),
     ("pa", "ਪੰਜਾਬੀ", "Punjabi"),
 ]
+
+# કોઈપણ ભારતીય ભાષાના આંકડા (૦-૯, ०-९, વગેરે) ને ફરજિયાત અંગ્રેજી 0-9 માં ફેરવવા માટે
+INDIC_DIGIT_BASES = [0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66]
+INDIC_DIGIT_TRANS = str.maketrans({
+    chr(base + d): str(d)
+    for base in INDIC_DIGIT_BASES
+    for d in range(10)
+})
 
 PAYWALL_HINTS = [
     "subscribe to continue", "et prime", "already a subscriber",
@@ -159,6 +166,17 @@ def get_ist_now():
     return datetime.now(IST_TZ)
 
 
+def enforce_english_digits(obj):
+    """તમામ અનુવાદિત ટેક્સ્ટમાંથી કોઈપણ ભારતીય આંકડાને અંગ્રેજી 0-9 માં ફેરવે છે."""
+    if isinstance(obj, str):
+        return obj.translate(INDIC_DIGIT_TRANS)
+    if isinstance(obj, list):
+        return [enforce_english_digits(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: enforce_english_digits(v) for k, v in obj.items()}
+    return obj
+
+
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
@@ -213,7 +231,6 @@ def is_similar_topic(new_title, existing_titles):
 
 
 def parse_fresh_pub_dt(pub_date_str, title, is_international=False):
-    """RSS/Atom ના બધા તારીખ ફોર્મેટ (IST, GMT, ISO-8601) સમજીને ફક્ત તાજા ન્યૂઝ પાસ કરે છે."""
     if re.search(r"('\s?2[0-5]\b|\b202[0-4]\b)", title):
         return None
     if not pub_date_str:
@@ -255,7 +272,6 @@ def parse_fresh_pub_dt(pub_date_str, title, is_international=False):
 
 
 def find_copied_phrases(source_text, draft_text, ngram_size=7):
-    """કોપીરાઇટ સ્કેનર: 7+ શબ્દોની બેઠી લાઈન પકડે છે (માત્ર શુદ્ધ આંકડા/તારીખની લાઈનોને અવગણીને)."""
     src_words = re.findall(r"[a-z0-9]+", source_text.lower())
     drf_words = re.findall(r"[a-z0-9]+", draft_text.lower())
     if len(src_words) < ngram_size or len(drf_words) < ngram_size:
@@ -269,7 +285,6 @@ def find_copied_phrases(source_text, draft_text, ngram_size=7):
         tokens = drf_words[i:i + ngram_size]
         gram = " ".join(tokens)
         if gram in src_ngrams and gram not in matches:
-            # જો અડધાથી વધુ શબ્દો માત્ર આંકડા/કરોડ/FY હોય તો તે કોપીરાઇટ નહીં પણ ફેક્ટ છે
             num_tokens = sum(1 for t in tokens if re.match(r"^(fy\d+|q[1-4]|\d+|crore|lakh|rs|usd|inr|percent)$", t))
             if num_tokens >= 3:
                 continue
@@ -349,7 +364,6 @@ def pick_related_internal_links(recent_posts, current_tags, max_links=3):
 # 4. ALL-WEBSITE SCANNER (RSS + ATOM + JSON-LD)
 # ==========================================
 def extract_jsonld_article_body(soup):
-    """Moneycontrol, NDTV, BS, ZeeBiz જેવી સાઇટ્સ પરથી JSON-LD articleBody ખેંચે છે."""
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             raw = script.string or script.get_text()
@@ -377,7 +391,6 @@ def extract_full_public_article(url):
             return None
         soup = BeautifulSoup(res.content, "html.parser")
 
-        # 1) પહેલા JSON-LD articleBody ટ્રાય કરો (સૌથી ચોખ્ખો ટેક્સ્ટ મળે છે)
         ld_body = extract_jsonld_article_body(soup)
 
         for tag in soup.find_all(["script", "style", "nav", "footer", "aside", "form", "noscript", "iframe"]):
@@ -414,11 +427,9 @@ def extract_full_public_article(url):
 
 
 def parse_feed_entries(xml_bytes):
-    """RSS (<item>) અને Atom (<entry>) બંને ફીડ્સ સપોર્ટ કરે છે."""
     entries = []
     root = ET.fromstring(xml_bytes)
 
-    # RSS items
     for item in root.findall(".//item")[:15]:
         title = clean_html_text(item.findtext("title"))
         link = (item.findtext("link") or "").strip()
@@ -426,7 +437,6 @@ def parse_feed_entries(xml_bytes):
         if title and link:
             entries.append((title, link, pub_date))
 
-    # Atom entries fallback
     if not entries:
         ns = {"atom": "http://www.w3.org/2005/Atom"}
         for entry in root.findall(".//atom:entry", ns)[:15]:
@@ -440,7 +450,6 @@ def parse_feed_entries(xml_bytes):
 
 
 def fetch_fresh_diverse_articles(history, live_blog_titles):
-    """બધી વેબસાઈટ્સ ફેદીને દરેક સાઇટમાંથી તાજા અને અલગ-અલગ ન્યૂઝ એકઠા કરે છે."""
     posted_urls = set(history["posted_urls"])
     known_titles = list(history["posted_titles"]) + list(live_blog_titles)
     source_buckets = {}
@@ -487,14 +496,12 @@ def fetch_fresh_diverse_articles(history, live_blog_titles):
         except Exception:
             continue
 
-    # સ્કેન રિપોર્ટ પ્રિન્ટ કરો જેથી ખબર પડે કઈ-કઈ વેબસાઈટ પરથી તાજા ન્યૂઝ મળ્યા
     summary_parts = [f"{src}: {len(b)}" for src, b in source_buckets.items() if len(b) > 0]
     print(f"📡 All-Website Scan Found Fresh News -> {', '.join(summary_parts) if summary_parts else 'None'}")
 
     active_buckets = [b for b in source_buckets.values() if b]
     active_buckets.sort(key=lambda b: b[0]["pub_dt"], reverse=True)
 
-    # Round-Robin: દરેક અલગ વેબસાઈટનો વારો પહેલા
     candidates = []
     max_depth = max((len(b) for b in active_buckets), default=0)
     for idx in range(max_depth):
@@ -566,7 +573,7 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.45):
 # ==========================================
 def pass1_extract_pure_facts(article):
     prompt = f"""
-Extract ONLY core verified facts, figures, dates, and company names from the news below into concise bullet notes.
+Extract ONLY core verified facts, figures, dates, and exact English company/stock names from the news below into concise bullet notes.
 DO NOT copy prose sentences. Keep every number, percentage, and rupee/dollar amount 100% accurate.
 
 TITLE: {article['title']}
@@ -575,8 +582,9 @@ TEXT:
 
 Return ONLY valid JSON:
 {{
-  "primary_topic": "Main company, stock, or economic topic",
-  "focus_keyword": "High-search Google keyword (3-5 words)",
+  "primary_topic": "Main company, stock, or economic topic in English",
+  "focus_keyword": "High-search Google keyword in English (3-5 words)",
+  "stock_and_company_names": ["Exact English Company/Stock Name 1", "Name 2"],
   "atomic_facts": ["Fact 1 with exact numbers", "Fact 2...", "..."],
   "quick_table": [
     {{"label": "Metric/Detail", "value": "Exact Value"}},
@@ -590,18 +598,21 @@ Return ONLY valid JSON:
 
 
 def pass2_write_natural_short_story(facts_json):
-    """ક્રિસ્પ, નેચરલ, 2-મિનિટમાં વાંચી શકાય તેવી Google #1 Short Story (450-650 શબ્દો)."""
     today_str = get_ist_now().strftime("%B %d, %Y")
     prompt = f"""
 You are a sharp Mumbai business journalist writing a crisp, engaging SHORT STORY for 'MarketMunafa' on {today_str}.
-Using ONLY the verified facts below, write a COMPLETE, 100% ORIGINAL, fast-reading, completely natural human-sounding financial short story (480 to 650 words total).
+Using ONLY the verified facts below, write a COMPLETE, 100% ORIGINAL, fast-reading, completely natural human-sounding financial short story (480 to 650 words total) in English.
 
 NATURAL SHORT STORY + GOOGLE #1 RANKING RULES:
-1. CRISP & NATURAL VOICE: Write the way an experienced Indian market editor speaks—short sentences (12-18 words), zero padding, zero filler, crystal clear. No robotic transitions or textbook tone.
+1. CRISP & NATURAL VOICE: Short sentences (12-18 words), zero padding, zero filler, crystal clear. No robotic transitions or textbook tone.
 2. STRICTLY BANNED AI CLICHES: Never use "delve", "tapestry", "landscape", "game-changer", "in conclusion", "testament", "ever-evolving", "rollercoaster", "underscores", "pivotal moment", "it is worth noting", "in today's fast-paced", "all eyes are on", "only time will tell".
-3. GOOGLE #1 HEADLINE: Put the primary search keyword near the start (55-72 chars). Crisp, factual, high-CTR, zero clickbait.
-4. SHORT-STORY STRUCTURE (High Mobile Retention & Featured Snippet Ready):
-   - `intro`: 2 short, punchy paragraphs (70-95 words total) answering what happened and why it matters immediately.
+3. ENGLISH-ONLY TITLE, THUMBNAIL & TAGS:
+   - `seo_title`: Strictly English, primary keyword near start (55-72 chars), factual, high-CTR, zero clickbait.
+   - `thumbnail_headline`: Strictly English, punchy 4-6 words.
+   - `category_badge`: Strictly English, 2-3 words (e.g. MARKET SHORT / STOCK ALERT / IPO NEWS).
+   - `tags`: 8-12 strictly English popular + specific stock/sector tags.
+4. SHORT-STORY STRUCTURE:
+   - `intro`: 2 short, punchy paragraphs (70-95 words total).
    - `quick_table`: 3-4 crisp rows showing exact key numbers at a glance.
    - `key_highlights`: 4 sharp, scannable one-line takeaways.
    - `sections`: Exactly 3 tight, high-value H2 sections (90-120 words each):
@@ -610,18 +621,18 @@ NATURAL SHORT STORY + GOOGLE #1 RANKING RULES:
      3) What Investors Should Track Next
    - `faqs`: 3 direct, practical "People Also Ask" Google questions with short 2-sentence answers.
    - `conclusion`: 2 sharp, natural wrap-up sentences (no buy/sell tips).
-5. TAGS: 8-12 clean popular + topic-specific SEO tags.
 
 VERIFIED FACTS:
 {json.dumps(facts_json, ensure_ascii=False)}
 
 Return ONLY valid JSON with this exact schema:
 {{
-  "seo_title": "Keyword-first crisp Google News headline (55-72 chars)",
-  "focus_keyword": "Primary search keyword",
-  "thumbnail_headline": "Punchy 4-6 word headline for thumbnail",
-  "category_badge": "2-3 word badge e.g. MARKET SHORT / STOCK ALERT",
-  "meta_description": "Crisp 140-155 char meta description with focus keyword",
+  "seo_title": "Keyword-first crisp English Google News headline (55-72 chars)",
+  "focus_keyword": "Primary English search keyword",
+  "stock_and_company_names": ["Exact English Company/Stock Name 1", "..."],
+  "thumbnail_headline": "Punchy 4-6 word English headline for thumbnail",
+  "category_badge": "2-3 word English badge e.g. MARKET SHORT / STOCK ALERT",
+  "meta_description": "Crisp 140-155 char English meta description with focus keyword",
   "tags": ["Tag1", "Tag2", "..."],
   "quick_table": [
     {{"label": "Key Parameter", "value": "Exact Value"}}
@@ -645,7 +656,6 @@ Return ONLY valid JSON with this exact schema:
 
 
 def pass3_copyright_humanizer_with_autoheal(draft_json, article):
-    """Pass 3 + Auto-Heal: કોપીરાઇટ ઓવરલેપ હોય તો પોસ્ટ ફેંકી દેવાને બદલે તેને તરત સાફ કરી દે છે."""
     flat_draft = flatten_article_json(draft_json)
     overlaps = find_copied_phrases(article["full_text"], flat_draft, ngram_size=7)
     cliches = find_ai_cliches(flat_draft)
@@ -664,9 +674,10 @@ Audit and polish this SHORT STORY JSON against the source for 100% originality, 
 {alert_text}
 
 RULES:
-- ZERO copied sentences (7+ words) from the source. Express figures and facts in your own fresh phrasing.
-- Keep it tight, crisp, and natural (480-650 words). Cut any repetitive fluff.
+- ZERO copied sentences (7+ words) from the source. Express figures and facts in fresh phrasing.
+- Keep it tight, crisp, and natural (480-650 words).
 - Keep all numbers and facts 100% accurate to the source. No buy/sell advice.
+- Keep seo_title, thumbnail_headline, category_badge, and tags strictly in English.
 - Keep all 3 sections, quick_table, 4 highlights, 3 FAQs, and conclusion complete.
 
 ORIGINAL SOURCE (fact & anti-copy check only):
@@ -682,7 +693,6 @@ Return ONLY the final polished JSON in the exact same schema.
     if not verified.get("seo_title") or len(verified.get("sections", [])) < 3:
         raise ValueError("Short story incomplete after audit.")
 
-    # Auto-Heal: જો હજુ 1-2 લાઈન ઓવરલેપ રહી ગઈ હોય તો માત્ર એ વાક્યો ફરી લખીને 0 કરી દો
     remaining_overlaps = find_copied_phrases(article["full_text"], flatten_article_json(verified), ngram_size=7)
     if remaining_overlaps:
         print(f"   🩹 Auto-healing {len(remaining_overlaps)} overlapping phrase(s)...")
@@ -704,8 +714,9 @@ JSON TO FIX:
 
 
 def translate_article_to_language(verified_en, lang_name):
+    """બોડીનો અનુવાદ જે-તે ભારતીય ભાષામાં કરશે, પણ બધા આંકડા (0-9) અને શેર/કંપનીના નામ 100% અંગ્રેજીમાં જ રાખશે."""
+    keep_names = verified_en.get("stock_and_company_names", [])
     payload_to_translate = {
-        "seo_title": verified_en["seo_title"],
         "quick_table": verified_en.get("quick_table", []),
         "intro": verified_en["intro"],
         "key_highlights": verified_en["key_highlights"],
@@ -714,27 +725,29 @@ def translate_article_to_language(verified_en, lang_name):
         "conclusion": verified_en["conclusion"]
     }
     prompt = f"""
-Translate this crisp financial SHORT STORY JSON into natural, fluent, everyday contemporary {lang_name} used by modern Indian news readers.
+Translate this financial SHORT STORY JSON into natural, fluent, contemporary {lang_name} used by modern Indian stock market readers.
 
-RULES:
-- Translate EVERY field completely (seo_title, quick_table, intro, key_highlights, all 3 sections, all 3 faqs, conclusion).
-- Make it sound like a native {lang_name} journalist wrote it directly—avoid stiff literal translation.
-- Keep company names, ₹ figures, and common terms (IPO, RBI, SEBI, Nifty, Sensex, Q2) clear and natural.
-- Preserve exact JSON keys and structure.
+STRICT ENGLISH-PRESERVATION RULES (MUST FOLLOW 100%):
+1. NUMBERS MUST STAY IN ENGLISH DIGITS (0-9): Write EVERY single number, price, percentage, date, year, and figure strictly using standard English Arabic numerals (0, 1, 2, 3, 4, 5, 6, 7, 8, 9) — e.g., ₹1,250, 15.4%, 2026, Q2, FY27, $280 million. NEVER use native script digits (no ૦-૯, ०-९, ০-৯, etc.).
+2. COMPANY, STOCK & SHARE NAMES MUST STAY IN ENGLISH SCRIPT: Keep ALL company names, stock/share names, brokerage names, indices, tickers, and financial institutions strictly in English Latin letters (e.g., Tata Motors, HDFC Bank, Reliance Industries, Nifty 50, Sensex, BSE, NSE, RBI, SEBI, IPO, EBITDA, EPS, PAT, MCX, {keep_names}). NEVER transliterate company or share names into {lang_name} script.
+3. NATURAL CONTEMPORARY {lang_name}: Translate all surrounding sentences, explanations, headings, table labels, highlights, FAQs, and conclusion into warm, crisp, natural journalistic {lang_name}. Never skip or shorten any paragraph.
+4. Preserve the exact JSON keys and structure.
 
 INPUT JSON:
 {json.dumps(payload_to_translate, ensure_ascii=False)}
 
 Return ONLY valid JSON.
 """
-    translated = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.35)
+    translated = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.32)
     if not translated.get("sections") or len(translated["sections"]) < len(verified_en["sections"]):
         raise ValueError(f"{lang_name} translation incomplete.")
-    return translated
+
+    # Python લેવલ પર પણ ખાતરી કરી લો કે એક પણ ભારતીય આંકડો ન રહી જાય
+    return enforce_english_digits(translated)
 
 
 # ==========================================
-# 7. PRO TV-NEWS STUDIO THUMBNAIL ENGINE
+# 7. PRO TV-NEWS STUDIO THUMBNAIL ENGINE (ENGLISH)
 # ==========================================
 def load_author_photo():
     if AUTHOR_IMAGE_URL:
@@ -911,7 +924,8 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     draw = ImageDraw.Draw(canvas)
     draw.rectangle([0, 0, W, 9], fill=(*th["accent"], 255))
 
-    badge = (badge_text or "MARKET SHORT").upper()[:24]
+    # થમ્બનેલ પર માત્ર અંગ્રેજી બેજ અને અંગ્રેજી હેડલાઈન જ આવશે
+    badge = re.sub(r"[^A-Za-z0-9\s\-&]", "", str(badge_text or "MARKET SHORT")).strip().upper()[:24] or "MARKET SHORT"
     badge_font = get_font(25, bold=True)
     tb = draw.textbbox((0, 0), badge, font=badge_font)
     badge_w = (tb[2] - tb[0]) + 72
@@ -919,7 +933,7 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     draw.ellipse([72, 64, 88, 80], fill=(255, 255, 255, 255))
     draw.text((100, 56), badge, font=badge_font, fill=(255, 255, 255, 255))
 
-    clean_hl = " ".join(str(headline).split()).upper()
+    clean_hl = " ".join(re.sub(r"[^\x20-\x7E₹]", "", str(headline)).split()).upper()
     title_font = get_font(56, bold=True)
     wrapped = textwrap.wrap(clean_hl, width=18)[:4]
     if len(wrapped) <= 2:
@@ -986,10 +1000,15 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
 
 
 # ==========================================
-# 8. #1 SEO SHORT-STORY HTML + DUAL SCHEMA
+# 8. GUJARATI-FIRST HTML + ENGLISH TITLE/NUMBERS/TAGS
 # ==========================================
 def build_language_block(lang_data, lang_code, is_default=False):
     display_style = "block" if is_default else "none"
+
+    hl_heading = "⚡ મુખ્ય મુદ્દાઓ (Key Highlights)" if lang_code == "gu" else "⚡ Quick Story Highlights"
+    faq_heading = "❓ વારંવાર પૂછાતા પ્રશ્નો (FAQ)" if lang_code == "gu" else "❓ Quick FAQs"
+    bottom_lbl = "નિષ્કર્ષ:" if lang_code == "gu" else "Bottom Line:"
+
     intro_html = "".join(
         f"<p style='line-height:1.85; margin-bottom:14px;'>{p.strip()}</p>"
         for p in lang_data.get("intro", "").split("\n") if p.strip()
@@ -1048,7 +1067,7 @@ def build_language_block(lang_data, lang_code, is_default=False):
         {qtable_html}
 
         <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:15px 17px; margin:18px 0;">
-            <h2 style="margin-top:0; font-size:18px; color:#1e3a8a;">⚡ Quick Story Highlights</h2>
+            <h2 style="margin-top:0; font-size:18px; color:#1e3a8a;">{hl_heading}</h2>
             <ul style="margin:0; padding-left:20px; line-height:1.72; color:#1e293b;">
                 {highlights_html}
             </ul>
@@ -1057,12 +1076,12 @@ def build_language_block(lang_data, lang_code, is_default=False):
         {sections_html}
 
         <div style="margin-top:24px;">
-            <h2 style="color:#0f172a; font-size:19px; margin-bottom:11px;">❓ Quick FAQs</h2>
+            <h2 style="color:#0f172a; font-size:19px; margin-bottom:11px;">{faq_heading}</h2>
             {faqs_html}
         </div>
 
         <div style="margin-top:20px; padding:14px 16px; background:#f0fdf4; border-left:4px solid #16a34a; border-radius:8px;">
-            <p style="margin:0; line-height:1.72; color:#14532d;"><strong>Bottom Line:</strong> {lang_data.get('conclusion', '')}</p>
+            <p style="margin:0; line-height:1.72; color:#14532d;"><strong>{bottom_lbl}</strong> {lang_data.get('conclusion', '')}</p>
         </div>
     </div>
     """
@@ -1098,15 +1117,36 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
         ]
     }
 
-    lang_buttons = [f"<button type='button' class='mm-lbtn active' onclick=\"mmSwitchPostLang('{uid}','en',this)\">English</button>"]
+    # ડિફોલ્ટ પહેલા ગુજરાતી ખુલશે, પછી વાચક બટન દબાવી ભાષા બદલી શકશે
+    default_lang = "gu" if "gu" in translations else "en"
+
+    lang_buttons = []
+    if "gu" in translations:
+        gu_cls = "mm-lbtn active" if default_lang == "gu" else "mm-lbtn"
+        lang_buttons.append(
+            f"<button type='button' class='{gu_cls}' onclick=\"mmSwitchPostLang('{uid}','gu',this)\">ગુજરાતી</button>"
+        )
+
+    en_cls = "mm-lbtn active" if default_lang == "en" else "mm-lbtn"
+    lang_buttons.append(
+        f"<button type='button' class='{en_cls}' onclick=\"mmSwitchPostLang('{uid}','en',this)\">English</button>"
+    )
+
     for code, native_label, _ in TARGET_LANGUAGES:
+        if code == "gu":
+            continue
         if code in translations:
             lang_buttons.append(
                 f"<button type='button' class='mm-lbtn' onclick=\"mmSwitchPostLang('{uid}','{code}',this)\">{native_label}</button>"
             )
 
-    panes_html = build_language_block(verified_en, "en", is_default=True)
+    panes_html = ""
+    if "gu" in translations:
+        panes_html += build_language_block(translations["gu"], "gu", is_default=(default_lang == "gu"))
+    panes_html += build_language_block(verified_en, "en", is_default=(default_lang == "en"))
     for code, _, _ in TARGET_LANGUAGES:
+        if code == "gu":
+            continue
         if code in translations:
             panes_html += build_language_block(translations[code], code, is_default=False)
 
@@ -1191,6 +1231,8 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
 
 
 def publish_to_blogger(access_token, title, html_content, labels):
+    # બ્લોગર ટાઇટલ અને ટૅગ્સ 100% અંગ્રેજીમાં જ રહેશે
+    clean_title = " ".join(re.sub(r"[^\x20-\x7E₹]", "", str(title)).split())
     clean_labels = []
     total_chars = 0
     for lbl in labels:
@@ -1208,14 +1250,14 @@ def publish_to_blogger(access_token, title, html_content, labels):
     }
     payload = {
         "kind": "blogger#post",
-        "title": title,
+        "title": clean_title,
         "content": html_content,
         "labels": clean_labels[:12]
     }
     res = requests.post(api_url, headers=headers, json=payload, timeout=25)
     if res.status_code in (200, 201):
         post_url = res.json().get("url", "")
-        print(f"   ✅ Published: {title} -> {post_url}")
+        print(f"   ✅ Published: {clean_title} -> {post_url}")
         return post_url
     else:
         print(f"   ❌ Blogger API Error ({res.status_code}): {res.text}")
@@ -1273,7 +1315,7 @@ def main():
             translations = {}
             all_langs_ready = True
             for code, native_name, eng_name in TARGET_LANGUAGES:
-                print(f"   🌐 Translating to {eng_name}...")
+                print(f"   🌐 Translating to {eng_name} (English numbers & stock names preserved)...")
                 try:
                     translations[code] = translate_article_to_language(verified_en, eng_name)
                     time.sleep(2)
