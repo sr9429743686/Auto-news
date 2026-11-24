@@ -22,7 +22,6 @@ CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "").strip()
 REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN", "").strip()
 BLOG_ID = os.environ.get("BLOG_ID", "6996150531679127159").strip()
 
-# GEMINI_API_KEYS અથવા GEMINI_API_KEY બંનેમાંથી Key લઈ લેશે (કોમા કે નવી લાઈન બંને ચાલશે)
 RAW_GEMINI_KEYS = (
     os.environ.get("GEMINI_API_KEYS", "") + "," + os.environ.get("GEMINI_API_KEY", "")
 )
@@ -30,12 +29,11 @@ GEMINI_KEYS = [
     k.strip() for k in re.split(r"[\s,;]+", RAW_GEMINI_KEYS) if len(k.strip()) > 10
 ]
 
-PRIMARY_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
+PRIMARY_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 MODEL_FALLBACKS = list(dict.fromkeys([
     PRIMARY_MODEL,
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash-lite"
+    "gemini-3.5-flash-lite",
+    "gemini-3.0-flash"
 ]))
 
 MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN", "3"))
@@ -45,7 +43,6 @@ MAX_ARTICLE_AGE_HOURS = int(os.environ.get("MAX_ARTICLE_AGE_HOURS", "36"))
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main").strip()
 
-# તમે મોકલેલો ફોટો આમાંથી કોઈ પણ નામે અપલોડ હશે તો ઓટોમેટિક મળી જશે
 AUTHOR_IMAGE_CANDIDATES = [
     "author.png",
     "1001185905.png",
@@ -62,7 +59,7 @@ HEADERS = {
     "Accept-Language": "en-IN,en;q=0.9"
 }
 
-# બધી 7 વેબસાઈટ્સના તાજા પબ્લિક RSS ફીડ્સ
+# બધી 7 વેબસાઈટ્સના બિઝનેસ અને માર્કેટ પબ્લિક RSS ફીડ્સ
 NEWS_FEEDS = [
     ("Moneycontrol", "https://www.moneycontrol.com/rss/latestnews.xml"),
     ("LiveMint", "https://www.livemint.com/rss/markets"),
@@ -72,7 +69,6 @@ NEWS_FEEDS = [
     ("Zee Business", "https://www.zeebiz.com/india-markets.xml"),
     ("NYTimes Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
     ("Moneycontrol Markets", "https://www.moneycontrol.com/rss/marketreports.xml"),
-    ("LiveMint News", "https://www.livemint.com/rss/news"),
 ]
 
 # ભારતની મુખ્ય ભાષાઓ (બધી ભાષા તૈયાર થયા પછી જ પોસ્ટ પબ્લિશ થશે)
@@ -94,7 +90,6 @@ PAYWALL_HINTS = [
     "for unlimited access", "create a free account to continue"
 ]
 
-# દરેક પોસ્ટના થમ્બનેલ માટે અલગ-અલગ પ્રીમિયમ કલર થીમ
 THUMB_THEMES = [
     {"bg1": (8, 22, 48), "bg2": (24, 58, 100), "accent": (245, 158, 11), "badge": (220, 38, 38), "bar": (15, 118, 110)},
     {"bg1": (15, 23, 42), "bg2": (49, 46, 129), "accent": (56, 189, 248), "badge": (234, 88, 12), "bar": (30, 64, 175)},
@@ -146,7 +141,6 @@ def normalize_title(title):
 
 
 def is_similar_topic(new_title, existing_titles):
-    """બે અલગ વેબસાઈટ પર એક જ ન્યૂઝ હોય તો તેને ડુપ્લીકેટ ગણીને સ્કિપ કરે છે."""
     n1 = normalize_title(new_title)
     w1 = {w for w in n1.split() if len(w) > 3}
     for old_t in existing_titles:
@@ -164,8 +158,6 @@ def is_similar_topic(new_title, existing_titles):
 
 
 def is_fresh_article(pub_date_str, title):
-    """માત્ર છેલ્લા 36 કલાકના તાજા સમાચાર જ પસંદ કરે છે (જૂના વર્ષના આર્ટિકલ બ્લોક)."""
-    # ટાઈટલમાં જૂનું વર્ષ (2021-2025 કે '22/'23/'24) હોય તો તરત સ્કિપ
     if re.search(r"('\s?2[0-5]\b|\b202[0-4]\b)", title):
         return False
     if not pub_date_str:
@@ -182,7 +174,6 @@ def is_fresh_article(pub_date_str, title):
 
 
 def find_copied_phrases(source_text, draft_text, ngram_size=6):
-    """મૂળ આર્ટિકલની કોઈ 6+ શબ્દોની લાઈન કોપી થઈ હોય તો પકડી પાડે છે."""
     src_words = re.findall(r"[a-z0-9]+", source_text.lower())
     drf_words = re.findall(r"[a-z0-9]+", draft_text.lower())
     if len(src_words) < ngram_size or len(drf_words) < ngram_size:
@@ -245,7 +236,6 @@ def extract_full_public_article(url):
 
 
 def fetch_fresh_diverse_articles(history):
-    """બધી 7 સાઇટ્સમાંથી વારાફરતી માત્ર આજના તાજા અને અલગ-અલગ ન્યૂઝ લાવે છે."""
     posted_urls = set(history["posted_urls"])
     known_titles = list(history["posted_titles"])
     per_source_buckets = []
@@ -286,7 +276,6 @@ def fetch_fresh_diverse_articles(history):
                     "pub_date": pub_date,
                     "full_text": full_text
                 })
-                # દરેક સાઇટમાંથી મહત્તમ 2 તાજા ન્યૂઝ જેથી બધી સાઇટનું મિશ્રણ મળે
                 if len(bucket) >= 2:
                     break
         except Exception as e:
@@ -296,7 +285,6 @@ def fetch_fresh_diverse_articles(history):
         if bucket:
             per_source_buckets.append(bucket)
 
-    # Round-Robin: 1-1 ન્યૂઝ દરેક સાઇટમાંથી વારાફરતી ગોઠવો
     candidates = []
     max_depth = max((len(b) for b in per_source_buckets), default=0)
     for idx in range(max_depth):
@@ -411,7 +399,6 @@ Return ONLY valid JSON with this exact schema:
 
 
 def verify_and_polish_article(draft_json, article):
-    """Pass 2: Python n-gram ચેક + Gemini ડબલ કોપીરાઇટ/ફેક્ટ/SEO ઓડિટ."""
     draft_flat = " ".join([
         draft_json.get("seo_title", ""),
         draft_json.get("intro", ""),
@@ -521,7 +508,6 @@ def get_font(size, bold=True):
 
 
 def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
-    """તમારા PNG/JPG ફોટા સાથે 1200x675 HD થમ્બનેલ બનાવી તરત GitHub પર લાઈવ કરે છે."""
     os.makedirs(THUMBNAIL_DIR, exist_ok=True)
     W, H = 1200, 675
     th = THUMB_THEMES[theme_index % len(THUMB_THEMES)]
@@ -529,14 +515,12 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     canvas = Image.new("RGBA", (W, H), (*th["bg1"], 255))
     draw = ImageDraw.Draw(canvas)
 
-    # સ્મૂથ ગ્રેડિયન્ટ બેકગ્રાઉન્ડ
     for y in range(H):
         r = int(th["bg1"][0] + (th["bg2"][0] - th["bg1"][0]) * y / H)
         g = int(th["bg1"][1] + (th["bg2"][1] - th["bg1"][1]) * y / H)
         b = int(th["bg1"][2] + (th["bg2"][2] - th["bg1"][2]) * y / H)
         draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-    # જમણી બાજુ ફોટા પાછળ સોફ્ટ ગ્લો
     glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(glow)
     gdraw.ellipse([690, 50, 1240, 610], fill=(*th["accent"], 55))
@@ -544,17 +528,14 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     canvas = Image.alpha_composite(canvas, glow)
     draw = ImageDraw.Draw(canvas)
 
-    # ટોપ એક્સેન્ટ સ્ટ્રીપ
     draw.rectangle([0, 0, W, 10], fill=(*th["accent"], 255))
 
-    # કેટેગરી બેજ
     badge = (badge_text or "MARKET NEWS").upper()[:26]
     badge_font = get_font(28, bold=True)
     badge_w = max(280, len(badge) * 20 + 40)
     draw.rounded_rectangle([55, 55, 55 + badge_w, 108], radius=10, fill=(*th["badge"], 255))
     draw.text((75, 65), badge, font=badge_font, fill=(255, 255, 255, 255))
 
-    # મુખ્ય હેડલાઈન (ડાબી બાજુ)
     title_font = get_font(54, bold=True)
     wrapped = textwrap.wrap(headline, width=21)[:4]
     y_pos = 152
@@ -563,23 +544,19 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
         draw.text((55, y_pos), line, font=title_font, fill=color)
         y_pos += 76
 
-    # નીચે બ્રાન્ડિંગ બાર
     sub_font = get_font(26, bold=True)
     date_str = get_ist_now().strftime("%d %b %Y")
     draw.rounded_rectangle([55, 555, 575, 618], radius=12, fill=(*th["bar"], 240))
     draw.text((78, 571), f"MARKETMUNAFA  |  {date_str}", font=sub_font, fill=(255, 255, 255, 255))
 
-    # તમારો PNG/JPG ફોટો જમણી બાજુ ગોઠવવો
     author_path = find_author_photo()
     if author_path:
         try:
             author = Image.open(author_path).convert("RGBA")
-            # જો PNG પહેલેથી ટ્રાન્સપરન્ટ હોય તો સીધો જ વાપરવો; નહીંતર સફેદ બેકગ્રાઉન્ડ હટાવવું
             alpha_min, _ = author.getchannel("A").getextrema()
             if alpha_min >= 250:
                 author = remove_white_bg_clean(author)
 
-            # ખાલી ટ્રાન્સપરન્ટ બોર્ડર ક્રોપ કરો જેથી ફોટો મોટો અને ચોખ્ખો દેખાય
             bbox = author.getbbox()
             if bbox:
                 author = author.crop(bbox)
@@ -606,7 +583,6 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     canvas.convert("RGB").save(filepath, "JPEG", quality=90, optimize=True)
 
     if GITHUB_REPO:
-        # Blogger પર પોસ્ટ પબ્લિશ થાય તે પહેલા જ થમ્બનેલ GitHub પર પુશ કરી દો
         try:
             subprocess.run(["git", "add", filepath], check=True)
             subprocess.run([
@@ -854,15 +830,12 @@ def main():
 
         print(f"\n🔍 Fresh News [{art['source']}]: {art['title']}")
         try:
-            # Step 1: 100% મૌલિક અંગ્રેજી લેખ
             draft_en = generate_original_english_article(art)
             time.sleep(2)
 
-            # Step 2: Python n-gram ચેક + Gemini ડબલ કોપીરાઇટ/SEO ઓડિટ
             verified_en = verify_and_polish_article(draft_en, art)
             time.sleep(2)
 
-            # Step 3: ભારતની તમામ મુખ્ય ભાષામાં સંપૂર્ણ અનુવાદ
             translations = {}
             all_langs_ready = True
             for code, native_name, eng_name in TARGET_LANGUAGES:
@@ -884,7 +857,6 @@ def main():
                 print("⏭️ બધી ભાષા પૂરી ન બની હોવાથી આ પોસ્ટ સ્કિપ કરી.")
                 continue
 
-            # Step 4: તમારા PNG ફોટા સાથે અલગ કલર થીમનું 1200x675 HD થમ્બનેલ
             slug_id = hashlib.md5(art["url"].encode("utf-8")).hexdigest()[:10]
             thumb_url = create_custom_thumbnail(
                 verified_en.get("thumbnail_headline", verified_en["seo_title"][:55]),
@@ -893,7 +865,6 @@ def main():
                 theme_index=posted_today
             )
 
-            # Step 5: અલગ પોસ્ટ તરીકે Blogger પર પબ્લિશ
             post_html = build_complete_post_html(verified_en, translations, thumb_url)
             ok = publish_to_blogger(
                 access_token=access_token,
