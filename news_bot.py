@@ -43,7 +43,8 @@ MODEL_FALLBACKS = list(dict.fromkeys([
 
 MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN", "3"))
 DAILY_MAX_POSTS = int(os.environ.get("DAILY_MAX_POSTS", "20"))
-MAX_ARTICLE_AGE_HOURS = int(os.environ.get("MAX_ARTICLE_AGE_HOURS", "6"))
+# ભારતીય સાઇટ્સ માટે આજના છેલ્લા 12 કલાક (સૌથી નવા પહેલા); ઇન્ટરનેશનલ (NYT) માટે 24 કલાક
+MAX_ARTICLE_AGE_HOURS = int(os.environ.get("MAX_ARTICLE_AGE_HOURS", "12"))
 
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
 GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main").strip()
@@ -62,20 +63,29 @@ THUMBNAIL_DIR = "thumbnails"
 HISTORY_FILE = "posted_urls.json"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-IN,en;q=0.9"
 }
 
-# 7 અલગ-અલગ વેબસાઈટ્સ (દર રનમાં 1 વેબસાઈટમાંથી 1 જ પોસ્ટ લેશે)
+# બધી મોટી બિઝનેસ & માર્કેટ વેબસાઈટ્સ (દરેકમાંથી અલગ-અલગ તાજા ન્યૂઝ માટે)
 NEWS_FEEDS = [
-    ("Moneycontrol", "https://www.moneycontrol.com/rss/latestnews.xml"),
-    ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml"),
-    ("LiveMint", "https://www.livemint.com/rss/markets"),
-    ("Economic Times", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
-    ("NDTV Business", "https://feeds.feedburner.com/ndtvprofit-latest"),
-    ("Business Standard", "https://www.business-standard.com/rss/markets-106.rss"),
-    ("Zee Business", "https://www.zeebiz.com/india-markets.xml"),
-    ("NYTimes Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
+    ("Moneycontrol", "https://www.moneycontrol.com/rss/latestnews.xml", False),
+    ("Moneycontrol", "https://www.moneycontrol.com/rss/business.xml", False),
+    ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml", False),
+    ("LiveMint", "https://www.livemint.com/rss/markets", False),
+    ("LiveMint", "https://www.livemint.com/rss/companies", False),
+    ("Economic Times", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", False),
+    ("Economic Times", "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms", False),
+    ("NDTV Business", "https://feeds.feedburner.com/ndtvprofit-latest", False),
+    ("Business Standard", "https://www.business-standard.com/rss/markets-106.rss", False),
+    ("Business Standard", "https://www.business-standard.com/rss/companies-101.rss", False),
+    ("Business Standard", "https://www.business-standard.com/rss/finance-103.rss", False),
+    ("Zee Business", "https://www.zeebiz.com/latest.xml", False),
+    ("Zee Business", "https://www.zeebiz.com/india-markets.xml", False),
+    ("Financial Express", "https://www.financialexpress.com/market/feed/", False),
+    ("CNBC TV18", "https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml", False),
+    ("NYTimes Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", True),
 ]
 
 TARGET_LANGUAGES = [
@@ -100,7 +110,8 @@ AI_CLICHES = [
     "delve into", "tapestry", "in conclusion", "game-changer",
     "testament to", "navigating the", "ever-evolving", "rollercoaster",
     "pivotal moment", "underscores the importance", "double-edged sword",
-    "landscape of", "in today's fast-paced", "it is worth noting"
+    "landscape of", "in today's fast-paced", "it is worth noting",
+    "in summary", "all eyes are on", "only time will tell"
 ]
 
 STOPWORDS = {
@@ -201,29 +212,50 @@ def is_similar_topic(new_title, existing_titles):
     return False
 
 
-def parse_today_fresh_dt(pub_date_str, title):
+def parse_fresh_pub_dt(pub_date_str, title, is_international=False):
+    """RSS/Atom ના બધા તારીખ ફોર્મેટ (IST, GMT, ISO-8601) સમજીને ફક્ત તાજા ન્યૂઝ પાસ કરે છે."""
     if re.search(r"('\s?2[0-5]\b|\b202[0-4]\b)", title):
         return None
     if not pub_date_str:
         return None
+
+    s = pub_date_str.strip()
+    s = re.sub(r"\bIST\b", "+0530", s)
+    s = re.sub(r"\bGMT\b", "+0000", s)
+
+    dt = None
     try:
-        dt = parsedate_to_datetime(pub_date_str.strip())
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt_ist = dt.astimezone(IST_TZ)
-        now_ist = get_ist_now()
-
-        if dt_ist.date() != now_ist.date():
-            return None
-        age_hours = (now_ist - dt_ist).total_seconds() / 3600.0
-        if -1.0 <= age_hours <= MAX_ARTICLE_AGE_HOURS:
-            return dt_ist
-        return None
+        dt = parsedate_to_datetime(s)
     except Exception:
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(s, fmt)
+                    break
+                except Exception:
+                    continue
+    if dt is None:
         return None
 
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST_TZ if not is_international else timezone.utc)
 
-def find_copied_phrases(source_text, draft_text, ngram_size=6):
+    dt_ist = dt.astimezone(IST_TZ)
+    now_ist = get_ist_now()
+    age_hours = (now_ist - dt_ist).total_seconds() / 3600.0
+
+    max_hours = 24 if is_international else MAX_ARTICLE_AGE_HOURS
+    if not is_international and dt_ist.date() != now_ist.date() and age_hours > 8:
+        return None
+    if -1.5 <= age_hours <= max_hours:
+        return dt_ist
+    return None
+
+
+def find_copied_phrases(source_text, draft_text, ngram_size=7):
+    """કોપીરાઇટ સ્કેનર: 7+ શબ્દોની બેઠી લાઈન પકડે છે (માત્ર શુદ્ધ આંકડા/તારીખની લાઈનોને અવગણીને)."""
     src_words = re.findall(r"[a-z0-9]+", source_text.lower())
     drf_words = re.findall(r"[a-z0-9]+", draft_text.lower())
     if len(src_words) < ngram_size or len(drf_words) < ngram_size:
@@ -234,10 +266,15 @@ def find_copied_phrases(source_text, draft_text, ngram_size=6):
     }
     matches = []
     for i in range(len(drf_words) - ngram_size + 1):
-        gram = " ".join(drf_words[i:i + ngram_size])
+        tokens = drf_words[i:i + ngram_size]
+        gram = " ".join(tokens)
         if gram in src_ngrams and gram not in matches:
+            # જો અડધાથી વધુ શબ્દો માત્ર આંકડા/કરોડ/FY હોય તો તે કોપીરાઇટ નહીં પણ ફેક્ટ છે
+            num_tokens = sum(1 for t in tokens if re.match(r"^(fy\d+|q[1-4]|\d+|crore|lakh|rs|usd|inr|percent)$", t))
+            if num_tokens >= 3:
+                continue
             matches.append(gram)
-            if len(matches) >= 12:
+            if len(matches) >= 10:
                 break
     return matches
 
@@ -309,21 +346,47 @@ def pick_related_internal_links(recent_posts, current_tags, max_links=3):
 
 
 # ==========================================
-# 4. FRESH DIVERSE NEWS (1 SITE = 1 POST)
+# 4. ALL-WEBSITE SCANNER (RSS + ATOM + JSON-LD)
 # ==========================================
+def extract_jsonld_article_body(soup):
+    """Moneycontrol, NDTV, BS, ZeeBiz જેવી સાઇટ્સ પરથી JSON-LD articleBody ખેંચે છે."""
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            raw = script.string or script.get_text()
+            if not raw:
+                continue
+            data = json.loads(raw)
+            items = data if isinstance(data, list) else [data]
+            for obj in items:
+                if isinstance(obj, dict):
+                    if obj.get("articleBody") and len(str(obj["articleBody"])) > 350:
+                        return clean_html_text(str(obj["articleBody"]))
+                    if isinstance(obj.get("@graph"), list):
+                        for g in obj["@graph"]:
+                            if isinstance(g, dict) and g.get("articleBody") and len(str(g["articleBody"])) > 350:
+                                return clean_html_text(str(g["articleBody"]))
+        except Exception:
+            continue
+    return None
+
+
 def extract_full_public_article(url):
     try:
-        res = requests.get(url, headers=HEADERS, timeout=15)
+        res = requests.get(url, headers=HEADERS, timeout=14)
         if res.status_code != 200:
             return None
         soup = BeautifulSoup(res.content, "html.parser")
+
+        # 1) પહેલા JSON-LD articleBody ટ્રાય કરો (સૌથી ચોખ્ખો ટેક્સ્ટ મળે છે)
+        ld_body = extract_jsonld_article_body(soup)
+
         for tag in soup.find_all(["script", "style", "nav", "footer", "aside", "form", "noscript", "iframe"]):
             tag.decompose()
 
         body_text_low = soup.get_text(" ", strip=True).lower()
         container = (
             soup.find("article")
-            or soup.find("div", class_=re.compile(r"(arttext|article-body|story-content|content_wrapper|main-content|story_details)", re.I))
+            or soup.find("div", class_=re.compile(r"(arttext|article-body|story-content|content_wrapper|main-content|story_details|article_content|story-element)", re.I))
             or soup
         )
 
@@ -331,47 +394,72 @@ def extract_full_public_article(url):
         for p in container.find_all("p"):
             txt = " ".join(p.get_text(" ", strip=True).split())
             low = txt.lower()
-            if len(txt) < 45:
+            if len(txt) < 40:
                 continue
-            if any(h in low for h in ["also read", "read more", "download app", "follow us on", "whatsapp channel", "copyright", "all rights reserved"]):
+            if any(h in low for h in ["also read", "read more", "download app", "follow us on", "whatsapp channel", "copyright", "all rights reserved", "disclaimer:"]):
                 continue
             if txt not in paragraphs:
                 paragraphs.append(txt)
 
-        full_text = "\n\n".join(paragraphs)
-        if len(full_text) < 500:
+        html_text = "\n\n".join(paragraphs)
+        full_text = ld_body if (ld_body and len(ld_body) > len(html_text)) else html_text
+
+        if not full_text or len(full_text) < 350:
             return None
-        if any(p_hint in body_text_low for p_hint in PAYWALL_HINTS) and len(full_text) < 950:
+        if any(p_hint in body_text_low for p_hint in PAYWALL_HINTS) and len(full_text) < 850:
             return None
-        return full_text[:7000]
+        return full_text[:6500]
     except Exception:
         return None
 
 
+def parse_feed_entries(xml_bytes):
+    """RSS (<item>) અને Atom (<entry>) બંને ફીડ્સ સપોર્ટ કરે છે."""
+    entries = []
+    root = ET.fromstring(xml_bytes)
+
+    # RSS items
+    for item in root.findall(".//item")[:15]:
+        title = clean_html_text(item.findtext("title"))
+        link = (item.findtext("link") or "").strip()
+        pub_date = (item.findtext("pubDate") or item.findtext("{http://purl.org/dc/elements/1.1/}date") or "").strip()
+        if title and link:
+            entries.append((title, link, pub_date))
+
+    # Atom entries fallback
+    if not entries:
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        for entry in root.findall(".//atom:entry", ns)[:15]:
+            title = clean_html_text(entry.findtext("atom:title", "", ns))
+            link_el = entry.find("atom:link", ns)
+            link = (link_el.attrib.get("href", "") if link_el is not None else "").strip()
+            pub_date = (entry.findtext("atom:updated", "", ns) or entry.findtext("atom:published", "", ns)).strip()
+            if title and link:
+                entries.append((title, link, pub_date))
+    return entries
+
+
 def fetch_fresh_diverse_articles(history, live_blog_titles):
+    """બધી વેબસાઈટ્સ ફેદીને દરેક સાઇટમાંથી તાજા અને અલગ-અલગ ન્યૂઝ એકઠા કરે છે."""
     posted_urls = set(history["posted_urls"])
     known_titles = list(history["posted_titles"]) + list(live_blog_titles)
     source_buckets = {}
 
-    for source_name, feed_url in NEWS_FEEDS:
+    for source_name, feed_url, is_intl in NEWS_FEEDS:
         source_buckets.setdefault(source_name, [])
+        if len(source_buckets[source_name]) >= 2:
+            continue
         try:
             res = requests.get(feed_url, headers=HEADERS, timeout=12)
             if res.status_code != 200:
                 continue
-            root = ET.fromstring(res.content)
-            items = root.findall(".//item")[:15]
+            entries = parse_feed_entries(res.content)
 
             raw_fresh = []
-            for item in items:
-                title = clean_html_text(item.findtext("title"))
-                link = (item.findtext("link") or "").strip()
-                pub_date = (item.findtext("pubDate") or "").strip()
-                if not title or not link or link in posted_urls:
+            for title, link, pub_date in entries:
+                if link in posted_urls or "/prime/" in link.lower():
                     continue
-                if "/prime/" in link.lower():
-                    continue
-                pub_dt = parse_today_fresh_dt(pub_date, title)
+                pub_dt = parse_fresh_pub_dt(pub_date, title, is_international=is_intl)
                 if pub_dt:
                     raw_fresh.append((pub_dt, title, link, pub_date))
 
@@ -396,13 +484,17 @@ def fetch_fresh_diverse_articles(history, live_blog_titles):
                     "pub_dt": pub_dt,
                     "full_text": full_text
                 })
-        except Exception as e:
-            print(f"[Feed Skip] {source_name}: {e}")
+        except Exception:
             continue
+
+    # સ્કેન રિપોર્ટ પ્રિન્ટ કરો જેથી ખબર પડે કઈ-કઈ વેબસાઈટ પરથી તાજા ન્યૂઝ મળ્યા
+    summary_parts = [f"{src}: {len(b)}" for src, b in source_buckets.items() if len(b) > 0]
+    print(f"📡 All-Website Scan Found Fresh News -> {', '.join(summary_parts) if summary_parts else 'None'}")
 
     active_buckets = [b for b in source_buckets.values() if b]
     active_buckets.sort(key=lambda b: b[0]["pub_dt"], reverse=True)
 
+    # Round-Robin: દરેક અલગ વેબસાઈટનો વારો પહેલા
     candidates = []
     max_depth = max((len(b) for b in active_buckets), default=0)
     for idx in range(max_depth):
@@ -470,12 +562,12 @@ def call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.45):
 
 
 # ==========================================
-# 6. 3-PASS GENUINE EDITORIAL & #1 SEO ENGINE
+# 6. SHORT-STORY #1 SEO + AUTO-HEAL ENGINE
 # ==========================================
 def pass1_extract_pure_facts(article):
     prompt = f"""
-Extract ONLY objective raw facts, numbers, dates, entity names, and key events from the news text below into brief neutral bullet notes.
-DO NOT copy prose sentences or stylistic wording. Keep every figure, percentage, rupee/dollar value, and company name 100% accurate.
+Extract ONLY core verified facts, figures, dates, and company names from the news below into concise bullet notes.
+DO NOT copy prose sentences. Keep every number, percentage, and rupee/dollar amount 100% accurate.
 
 TITLE: {article['title']}
 TEXT:
@@ -483,121 +575,131 @@ TEXT:
 
 Return ONLY valid JSON:
 {{
-  "primary_topic": "Main company, sector, or economic subject",
-  "focus_keyword": "High-volume Google search keyword (3-5 words)",
-  "key_entities": ["Entity 1", "Entity 2"],
+  "primary_topic": "Main company, stock, or economic topic",
+  "focus_keyword": "High-search Google keyword (3-5 words)",
   "atomic_facts": ["Fact 1 with exact numbers", "Fact 2...", "..."],
   "quick_table": [
-    {{"label": "Metric/Detail Name", "value": "Exact Value/Fact"}},
-    {{"label": "Metric/Detail Name", "value": "Exact Value/Fact"}},
-    {{"label": "Metric/Detail Name", "value": "Exact Value/Fact"}},
-    {{"label": "Metric/Detail Name", "value": "Exact Value/Fact"}}
+    {{"label": "Metric/Detail", "value": "Exact Value"}},
+    {{"label": "Metric/Detail", "value": "Exact Value"}},
+    {{"label": "Metric/Detail", "value": "Exact Value"}},
+    {{"label": "Metric/Detail", "value": "Exact Value"}}
   ]
 }}
 """
-    return call_gemini(prompt, expect_json=True, max_tokens=2048, temperature=0.2)
+    return call_gemini(prompt, expect_json=True, max_tokens=1800, temperature=0.2)
 
 
-def pass2_write_genuine_seo_article(facts_json):
+def pass2_write_natural_short_story(facts_json):
+    """ક્રિસ્પ, નેચરલ, 2-મિનિટમાં વાંચી શકાય તેવી Google #1 Short Story (450-650 શબ્દો)."""
     today_str = get_ist_now().strftime("%B %d, %Y")
     prompt = f"""
-You are a seasoned Indian business journalist and CFA-informed financial writer for 'MarketMunafa' writing on {today_str}.
-Using ONLY the verified factual notes below, write a COMPLETE, deeply informative, 100% ORIGINAL, natural human-sounding financial news analysis article (850 to 1,100 words).
+You are a sharp Mumbai business journalist writing a crisp, engaging SHORT STORY for 'MarketMunafa' on {today_str}.
+Using ONLY the verified facts below, write a COMPLETE, 100% ORIGINAL, fast-reading, completely natural human-sounding financial short story (480 to 650 words total).
 
-GOOGLE #1 RANKING & GENUINE WRITING RULES:
-1. HUMAN JOURNALISTIC VOICE: Write crisp, clear, direct Indian English news prose—like a senior Mumbai markets reporter. Vary sentence length. Use specific numbers and context instead of fluff.
-2. STRICTLY BANNED AI CLICHES: Never use words/phrases like "delve", "tapestry", "landscape", "game-changer", "in conclusion", "testament", "ever-evolving", "rollercoaster", "underscores", "pivotal moment", "it is worth noting", "in today's fast-paced".
-3. SEO TITLE FOR #1 RANKING: Put the primary search keyword near the start of the headline (58-72 characters). Make it factual, timely, and high-CTR without clickbait.
-4. GOOGLE DISCOVER & FEATURED SNIPPET STRUCTURE:
-   - Direct inverted-pyramid intro answering the core question in the first 2 sentences.
-   - Clean 4-row `quick_table` (Key Facts at a Glance).
-   - 5 sharp bullet `key_highlights`.
-   - 4 well-structured H2 `sections`: (a) Breaking Details & Core Numbers, (b) Why This Matters Now (Sector/Macro Context), (c) Impact on Retail Investors & Market Sentiment, (d) Key Triggers to Watch Ahead.
-   - 4 real Google "People Also Ask" style `faqs` with direct 2-3 sentence factual answers.
-5. FACT INTEGRITY & ADSENSE SAFETY: Never invent any numbers not in the facts. Never give direct Buy/Sell tips or guaranteed profit promises.
-6. TAGS: 10-12 clean SEO tags (mix of broad popular terms like 'Stock Market News', 'Business News' + exact company/sector keywords).
+NATURAL SHORT STORY + GOOGLE #1 RANKING RULES:
+1. CRISP & NATURAL VOICE: Write the way an experienced Indian market editor speaks—short sentences (12-18 words), zero padding, zero filler, crystal clear. No robotic transitions or textbook tone.
+2. STRICTLY BANNED AI CLICHES: Never use "delve", "tapestry", "landscape", "game-changer", "in conclusion", "testament", "ever-evolving", "rollercoaster", "underscores", "pivotal moment", "it is worth noting", "in today's fast-paced", "all eyes are on", "only time will tell".
+3. GOOGLE #1 HEADLINE: Put the primary search keyword near the start (55-72 chars). Crisp, factual, high-CTR, zero clickbait.
+4. SHORT-STORY STRUCTURE (High Mobile Retention & Featured Snippet Ready):
+   - `intro`: 2 short, punchy paragraphs (70-95 words total) answering what happened and why it matters immediately.
+   - `quick_table`: 3-4 crisp rows showing exact key numbers at a glance.
+   - `key_highlights`: 4 sharp, scannable one-line takeaways.
+   - `sections`: Exactly 3 tight, high-value H2 sections (90-120 words each):
+     1) The Core Story & Numbers
+     2) Why It Matters Right Now
+     3) What Investors Should Track Next
+   - `faqs`: 3 direct, practical "People Also Ask" Google questions with short 2-sentence answers.
+   - `conclusion`: 2 sharp, natural wrap-up sentences (no buy/sell tips).
+5. TAGS: 8-12 clean popular + topic-specific SEO tags.
 
-VERIFIED FACTUAL NOTES:
+VERIFIED FACTS:
 {json.dumps(facts_json, ensure_ascii=False)}
 
 Return ONLY valid JSON with this exact schema:
 {{
-  "seo_title": "Keyword-rich Google News headline (58-72 chars)",
-  "focus_keyword": "Primary target search keyword",
-  "thumbnail_headline": "Punchy 4-6 word headline for image banner",
-  "category_badge": "2-3 word badge e.g. MARKET UPDATE / IPO ALERT",
-  "meta_description": "Compelling 145-155 char meta description containing focus keyword",
+  "seo_title": "Keyword-first crisp Google News headline (55-72 chars)",
+  "focus_keyword": "Primary search keyword",
+  "thumbnail_headline": "Punchy 4-6 word headline for thumbnail",
+  "category_badge": "2-3 word badge e.g. MARKET SHORT / STOCK ALERT",
+  "meta_description": "Crisp 140-155 char meta description with focus keyword",
   "tags": ["Tag1", "Tag2", "..."],
   "quick_table": [
-    {{"label": "Key Parameter", "value": "Exact Value"}},
     {{"label": "Key Parameter", "value": "Exact Value"}}
   ],
-  "intro": "2 strong opening paragraphs with direct answers and exact figures.",
-  "key_highlights": ["Point 1", "Point 2", "Point 3", "Point 4", "Point 5"],
+  "intro": "2 short punchy opening paragraphs.",
+  "key_highlights": ["Point 1", "Point 2", "Point 3", "Point 4"],
   "sections": [
-    {{"heading": "H2 Heading 1", "body": "2-3 detailed natural paragraphs"}},
-    {{"heading": "H2 Heading 2", "body": "2-3 detailed natural paragraphs"}},
-    {{"heading": "H2 Heading 3", "body": "2-3 detailed natural paragraphs"}},
-    {{"heading": "H2 Heading 4", "body": "2 detailed natural paragraphs"}}
+    {{"heading": "H2 Heading 1", "body": "1-2 tight natural paragraphs"}},
+    {{"heading": "H2 Heading 2", "body": "1-2 tight natural paragraphs"}},
+    {{"heading": "H2 Heading 3", "body": "1-2 tight natural paragraphs"}}
   ],
   "faqs": [
-    {{"q": "Natural user search question 1?", "a": "Direct factual answer."}},
-    {{"q": "Natural user search question 2?", "a": "Direct factual answer."}},
-    {{"q": "Natural user search question 3?", "a": "Direct factual answer."}},
-    {{"q": "Natural user search question 4?", "a": "Direct factual answer."}}
+    {{"q": "User search question 1?", "a": "Direct 2-sentence answer."}},
+    {{"q": "User search question 2?", "a": "Direct 2-sentence answer."}},
+    {{"q": "User search question 3?", "a": "Direct 2-sentence answer."}}
   ],
-  "conclusion": "Clear forward-looking closing takeaway paragraph (without starting with 'In conclusion')."
+  "conclusion": "2 sharp closing sentences."
 }}
 """
-    return call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.55)
+    return call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.55)
 
 
-def pass3_copyright_humanizer_audit(draft_json, article):
+def pass3_copyright_humanizer_with_autoheal(draft_json, article):
+    """Pass 3 + Auto-Heal: કોપીરાઇટ ઓવરલેપ હોય તો પોસ્ટ ફેંકી દેવાને બદલે તેને તરત સાફ કરી દે છે."""
     flat_draft = flatten_article_json(draft_json)
-    overlaps = find_copied_phrases(article["full_text"], flat_draft, ngram_size=6)
+    overlaps = find_copied_phrases(article["full_text"], flat_draft, ngram_size=7)
     cliches = find_ai_cliches(flat_draft)
 
     audit_alerts = []
     if overlaps:
-        audit_alerts.append(f"CRITICAL COPYRIGHT FIX: Completely rewrite any sentence containing these overlapping 6-word phrases: {overlaps}")
+        audit_alerts.append(f"REWRITE REQUIRED: Rephrase sentences containing these source overlaps in completely fresh everyday words: {overlaps}")
     if cliches:
-        audit_alerts.append(f"CRITICAL HUMANIZER FIX: Remove and naturally rephrase these robotic AI clichés: {cliches}")
-    alert_text = "\n".join(audit_alerts) if audit_alerts else "Zero 6-word overlaps and zero AI clichés detected; polish for maximum Google #1 readability and factual precision."
+        audit_alerts.append(f"REMOVE AI CLICHES: Replace these stiff phrases with natural journalism: {cliches}")
+    alert_text = "\n".join(audit_alerts) if audit_alerts else "Polish to sound 100% like an authentic, crisp human-written short story."
 
     prompt = f"""
-You are the Chief Editor, Copyright Compliance Officer, and Google SEO Specialist for MarketMunafa.
-Perform a strict final audit of this DRAFT ARTICLE against the ORIGINAL SOURCE.
+You are the Chief Editor and Copyright Compliance Officer at MarketMunafa.
+Audit and polish this SHORT STORY JSON against the source for 100% originality, natural human flow, factual accuracy, and Google #1 SEO.
 
 {alert_text}
 
-STRICT FINAL CHECKLIST:
-1. ZERO COPYRIGHT OVERLAP: Ensure zero 6+ word phrases match the original source verbatim (except official company names or formal regulatory titles).
-2. 100% GENUINE HUMAN FEEL: Remove any stiff, repetitive, or AI-sounding transitions. Make it read like authentic original financial journalism.
-3. FACT ACCURACY: Cross-check every single number, percentage, date, and name against the source. Remove anything unsupported.
-4. GOOGLE #1 SEO & ADSENSE COMPLIANCE:
-   - Headline must be natural, keyword-focused, and under 75 characters.
-   - All 4 sections, quick_table, 5 key_highlights, 4 FAQs, and conclusion must be complete and substantial.
-   - Zero buy/sell advice or policy-violating claims.
+RULES:
+- ZERO copied sentences (7+ words) from the source. Express figures and facts in your own fresh phrasing.
+- Keep it tight, crisp, and natural (480-650 words). Cut any repetitive fluff.
+- Keep all numbers and facts 100% accurate to the source. No buy/sell advice.
+- Keep all 3 sections, quick_table, 4 highlights, 3 FAQs, and conclusion complete.
 
-ORIGINAL SOURCE (for fact-check & anti-copy verification only):
+ORIGINAL SOURCE (fact & anti-copy check only):
 {article['full_text'][:3500]}
 
-DRAFT JSON TO AUDIT & FINALIZE:
+DRAFT JSON:
 {json.dumps(draft_json, ensure_ascii=False)}
 
 Return ONLY the final polished JSON in the exact same schema.
 """
-    verified = call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.35)
+    verified = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.35)
 
     if not verified.get("seo_title") or len(verified.get("sections", [])) < 3:
-        raise ValueError("Final audited article incomplete.")
+        raise ValueError("Short story incomplete after audit.")
 
-    # ફાઇનલ હાર્ડ કોપીરાઇટ ગેટ (8+ શબ્દોની બેઠી લાઈન હોય તો જ રિજેક્ટ થશે)
-    final_overlaps = find_copied_phrases(article["full_text"], flatten_article_json(verified), ngram_size=8)
-    if len(final_overlaps) > 3:
-        raise ValueError(f"Copyright safety gate rejected post due to overlaps: {final_overlaps[:3]}")
+    # Auto-Heal: જો હજુ 1-2 લાઈન ઓવરલેપ રહી ગઈ હોય તો માત્ર એ વાક્યો ફરી લખીને 0 કરી દો
+    remaining_overlaps = find_copied_phrases(article["full_text"], flatten_article_json(verified), ngram_size=7)
+    if remaining_overlaps:
+        print(f"   🩹 Auto-healing {len(remaining_overlaps)} overlapping phrase(s)...")
+        heal_prompt = f"""
+The JSON article below still shares these exact phrases with the source: {remaining_overlaps}
+Rewrite ONLY the sentences containing those phrases using completely different sentence structure and fresh natural wording while preserving the exact numbers/facts.
+Return ONLY the updated complete JSON in the exact same schema.
 
-    print(f"   🛡️ Copyright & Humanizer Audit Passed (8-gram overlaps: {len(final_overlaps)})")
+JSON TO FIX:
+{json.dumps(verified, ensure_ascii=False)}
+"""
+        verified = call_gemini(heal_prompt, expect_json=True, max_tokens=3072, temperature=0.4)
+        remaining_overlaps = find_copied_phrases(article["full_text"], flatten_article_json(verified), ngram_size=8)
+        if len(remaining_overlaps) > 2:
+            raise ValueError(f"Copyright gate rejected after auto-heal: {remaining_overlaps[:3]}")
+
+    print(f"   🛡️ Copyright & Natural Short-Story Audit Passed (overlaps: {len(remaining_overlaps)})")
     return verified
 
 
@@ -612,12 +714,12 @@ def translate_article_to_language(verified_en, lang_name):
         "conclusion": verified_en["conclusion"]
     }
     prompt = f"""
-Translate the following COMPLETE financial news article JSON into natural, fluent, contemporary {lang_name} as spoken and read in top Indian business newspapers today.
+Translate this crisp financial SHORT STORY JSON into natural, fluent, everyday contemporary {lang_name} used by modern Indian news readers.
 
 RULES:
-- Translate EVERY field completely (seo_title, quick_table labels/values, intro, all key_highlights, all 4 sections, all 4 faqs, conclusion). Never shorten or skip any paragraph.
-- Avoid stiff word-for-word literal translation; write warm, clear, natural journalistic {lang_name}.
-- Keep company names, ₹ amounts, and common market terms (IPO, RBI, SEBI, Nifty, Sensex, EBITDA, Q2) natural and easy to understand.
+- Translate EVERY field completely (seo_title, quick_table, intro, key_highlights, all 3 sections, all 3 faqs, conclusion).
+- Make it sound like a native {lang_name} journalist wrote it directly—avoid stiff literal translation.
+- Keep company names, ₹ figures, and common terms (IPO, RBI, SEBI, Nifty, Sensex, Q2) clear and natural.
 - Preserve exact JSON keys and structure.
 
 INPUT JSON:
@@ -625,7 +727,7 @@ INPUT JSON:
 
 Return ONLY valid JSON.
 """
-    translated = call_gemini(prompt, expect_json=True, max_tokens=4096, temperature=0.35)
+    translated = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.35)
     if not translated.get("sections") or len(translated["sections"]) < len(verified_en["sections"]):
         raise ValueError(f"{lang_name} translation incomplete.")
     return translated
@@ -809,7 +911,7 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     draw = ImageDraw.Draw(canvas)
     draw.rectangle([0, 0, W, 9], fill=(*th["accent"], 255))
 
-    badge = (badge_text or "MARKET BREAKING").upper()[:24]
+    badge = (badge_text or "MARKET SHORT").upper()[:24]
     badge_font = get_font(25, bold=True)
     tb = draw.textbbox((0, 0), badge, font=badge_font)
     badge_w = (tb[2] - tb[0]) + 72
@@ -860,7 +962,7 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
     date_str = get_ist_now().strftime("%d %b %Y").upper()
     draw.text(
         (328, bar_y + 21),
-        f"STOCK MARKET & BUSINESS ANALYSIS   •   {date_str}",
+        f"STOCK MARKET & BUSINESS SHORT   •   {date_str}",
         font=meta_font, fill=(226, 232, 240, 255)
     )
 
@@ -884,17 +986,17 @@ def create_custom_thumbnail(headline, badge_text, slug_id, theme_index=0):
 
 
 # ==========================================
-# 8. #1 SEO HTML + DUAL SCHEMA + INTERNAL LINKS
+# 8. #1 SEO SHORT-STORY HTML + DUAL SCHEMA
 # ==========================================
 def build_language_block(lang_data, lang_code, is_default=False):
     display_style = "block" if is_default else "none"
     intro_html = "".join(
-        f"<p style='line-height:1.85; margin-bottom:15px;'>{p.strip()}</p>"
+        f"<p style='line-height:1.85; margin-bottom:14px;'>{p.strip()}</p>"
         for p in lang_data.get("intro", "").split("\n") if p.strip()
     )
 
     qtable_rows = ""
-    for row in lang_data.get("quick_table", [])[:5]:
+    for row in lang_data.get("quick_table", [])[:4]:
         if row.get("label") and row.get("value"):
             qtable_rows += f"""
             <tr>
@@ -905,26 +1007,26 @@ def build_language_block(lang_data, lang_code, is_default=False):
     qtable_html = ""
     if qtable_rows:
         qtable_html = f"""
-        <div style="overflow-x:auto; margin:18px 0 22px 0;">
-          <table style="width:100%; border-collapse:collapse; font-size:15px; border-radius:8px; overflow:hidden;">
+        <div style="overflow-x:auto; margin:16px 0 20px 0;">
+          <table style="width:100%; border-collapse:collapse; font-size:15px;">
             <tbody>{qtable_rows}</tbody>
           </table>
         </div>
         """
 
     highlights_html = "".join(
-        f"<li style='margin-bottom:8px;'>{item}</li>"
+        f"<li style='margin-bottom:7px;'>{item}</li>"
         for item in lang_data.get("key_highlights", [])
     )
 
     sections_html = ""
     for sec in lang_data.get("sections", []):
         body_ps = "".join(
-            f"<p style='line-height:1.85; margin-bottom:14px;'>{p.strip()}</p>"
+            f"<p style='line-height:1.85; margin-bottom:13px;'>{p.strip()}</p>"
             for p in sec.get("body", "").split("\n") if p.strip()
         )
         sections_html += f"""
-        <h2 style="color:#0f172a; font-size:21px; margin-top:26px; margin-bottom:11px; border-left:4px solid #1d4ed8; padding-left:11px;">
+        <h2 style="color:#0f172a; font-size:20px; margin-top:24px; margin-bottom:10px; border-left:4px solid #1d4ed8; padding-left:10px;">
             {sec.get('heading', '')}
         </h2>
         {body_ps}
@@ -933,9 +1035,9 @@ def build_language_block(lang_data, lang_code, is_default=False):
     faqs_html = ""
     for faq in lang_data.get("faqs", []):
         faqs_html += f"""
-        <div style="margin-bottom:12px; padding:13px 15px; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0;">
-            <h3 style="margin:0 0 6px 0; font-size:16px; font-weight:700; color:#0f172a;">Q: {faq.get('q', '')}</h3>
-            <p style="margin:0; color:#334155; line-height:1.7;">{faq.get('a', '')}</p>
+        <div style="margin-bottom:11px; padding:12px 14px; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0;">
+            <h3 style="margin:0 0 5px 0; font-size:15.5px; font-weight:700; color:#0f172a;">Q: {faq.get('q', '')}</h3>
+            <p style="margin:0; color:#334155; line-height:1.68;">{faq.get('a', '')}</p>
         </div>
         """
 
@@ -945,22 +1047,22 @@ def build_language_block(lang_data, lang_code, is_default=False):
 
         {qtable_html}
 
-        <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:16px 18px; margin:20px 0;">
-            <h2 style="margin-top:0; font-size:19px; color:#1e3a8a;">📌 Key Takeaways</h2>
-            <ul style="margin:0; padding-left:20px; line-height:1.75; color:#1e293b;">
+        <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:15px 17px; margin:18px 0;">
+            <h2 style="margin-top:0; font-size:18px; color:#1e3a8a;">⚡ Quick Story Highlights</h2>
+            <ul style="margin:0; padding-left:20px; line-height:1.72; color:#1e293b;">
                 {highlights_html}
             </ul>
         </div>
 
         {sections_html}
 
-        <div style="margin-top:26px;">
-            <h2 style="color:#0f172a; font-size:20px; margin-bottom:12px;">❓ Frequently Asked Questions (FAQ)</h2>
+        <div style="margin-top:24px;">
+            <h2 style="color:#0f172a; font-size:19px; margin-bottom:11px;">❓ Quick FAQs</h2>
             {faqs_html}
         </div>
 
-        <div style="margin-top:22px; padding:15px 18px; background:#f0fdf4; border-left:4px solid #16a34a; border-radius:8px;">
-            <p style="margin:0; line-height:1.75; color:#14532d;"><strong>Editorial Takeaway:</strong> {lang_data.get('conclusion', '')}</p>
+        <div style="margin-top:20px; padding:14px 16px; background:#f0fdf4; border-left:4px solid #16a34a; border-radius:8px;">
+            <p style="margin:0; line-height:1.72; color:#14532d;"><strong>Bottom Line:</strong> {lang_data.get('conclusion', '')}</p>
         </div>
     </div>
     """
@@ -1020,13 +1122,13 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
     related_html = ""
     if related_posts:
         links_li = "".join(
-            f"<li style='margin-bottom:8px;'><a href='{rp['url']}' style='color:#1d4ed8; font-weight:600; text-decoration:none;'>{rp['title']}</a></li>"
+            f"<li style='margin-bottom:7px;'><a href='{rp['url']}' style='color:#1d4ed8; font-weight:600; text-decoration:none;'>{rp['title']}</a></li>"
             for rp in related_posts
         )
         related_html = f"""
-        <div style="margin-top:26px; padding:16px 18px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px;">
-            <h3 style="margin:0 0 10px 0; font-size:17px; color:#0f172a;">🔗 Also Read on MarketMunafa</h3>
-            <ul style="margin:0; padding-left:20px; line-height:1.7;">{links_li}</ul>
+        <div style="margin-top:24px; padding:15px 17px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px;">
+            <h3 style="margin:0 0 9px 0; font-size:16.5px; color:#0f172a;">🔗 Also Read on MarketMunafa</h3>
+            <ul style="margin:0; padding-left:20px; line-height:1.68;">{links_li}</ul>
         </div>
         """
 
@@ -1035,7 +1137,7 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
   <style>
     #mm-post-{uid} .mm-langbar {{
       display:flex; flex-wrap:wrap; gap:7px; align-items:center;
-      background:#f1f5f9; padding:12px; border-radius:10px; margin:16px 0 20px 0;
+      background:#f1f5f9; padding:11px 12px; border-radius:10px; margin:14px 0 18px 0;
       border:1px solid #cbd5e1;
     }}
     #mm-post-{uid} .mm-lbtn {{
@@ -1051,7 +1153,7 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
   {thumb_block}
 
   <p style="font-size:13.5px; color:#64748b; margin-bottom:12px;">
-    📅 Published on: {ist_str} | By <strong>MarketMunafa Editorial Desk</strong>
+    📅 Published on: {ist_str} | By <strong>MarketMunafa Editorial Desk</strong> • 2 min read
   </p>
 
   <div class="mm-langbar">
@@ -1063,9 +1165,9 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
 
   {related_html}
 
-  <hr style="margin:26px 0 14px 0; border:none; border-top:1px solid #e2e8f0;" />
+  <hr style="margin:24px 0 12px 0; border:none; border-top:1px solid #e2e8f0;" />
   <p style="font-size:12.5px; color:#64748b; line-height:1.6;">
-    <strong>Disclaimer:</strong> This report is prepared by the MarketMunafa Editorial Desk for informational and educational purposes only and does not constitute investment advice. Stock market investments are subject to market risks; please consult a SEBI-registered advisor before investing.
+    <strong>Disclaimer:</strong> This short report is prepared by the MarketMunafa Editorial Desk for informational and educational purposes only and does not constitute investment advice. Stock market investments are subject to market risks; please consult a SEBI-registered advisor before investing.
   </p>
 
   <script type="application/ld+json">{json.dumps(news_schema, ensure_ascii=False)}</script>
@@ -1121,7 +1223,7 @@ def publish_to_blogger(access_token, title, html_content, labels):
 
 
 # ==========================================
-# 9. MAIN EXECUTION LOOP (1 WEBSITE = 1 POST PER RUN)
+# 9. MAIN EXECUTION LOOP (1 WEBSITE = 1 SHORT STORY)
 # ==========================================
 def main():
     history = load_history()
@@ -1140,7 +1242,7 @@ def main():
     remaining_today = min(MAX_POSTS_PER_RUN, DAILY_MAX_POSTS - posted_today)
     candidates = fetch_fresh_diverse_articles(history, live_blog_titles)
     if not candidates:
-        print(f"ℹ️ આજે ({today_key}) છેલ્લા {MAX_ARTICLE_AGE_HOURS} કલાકના કોઈ નવા અલગ સમાચાર મળ્યા નથી.")
+        print(f"ℹ️ આજે ({today_key}) કોઈ નવા અલગ સમાચાર મળ્યા નથી.")
         return
 
     published_count = 0
@@ -1160,12 +1262,12 @@ def main():
             facts_json = pass1_extract_pure_facts(art)
             time.sleep(2)
 
-            print("   ✍️ Pass 2: Writing genuine original SEO article...")
-            draft_en = pass2_write_genuine_seo_article(facts_json)
+            print("   ✍️ Pass 2: Writing natural SEO short story...")
+            draft_en = pass2_write_natural_short_story(facts_json)
             time.sleep(2)
 
-            print("   🔍 Pass 3: Running copyright, fact & SEO audit...")
-            verified_en = pass3_copyright_humanizer_audit(draft_en, art)
+            print("   🔍 Pass 3: Copyright audit & auto-heal...")
+            verified_en = pass3_copyright_humanizer_with_autoheal(draft_en, art)
             time.sleep(2)
 
             translations = {}
@@ -1192,7 +1294,7 @@ def main():
             slug_id = hashlib.md5(art["url"].encode("utf-8")).hexdigest()[:10]
             thumb_url = create_custom_thumbnail(
                 verified_en.get("thumbnail_headline", verified_en["seo_title"][:50]),
-                verified_en.get("category_badge", "MARKET BREAKING"),
+                verified_en.get("category_badge", "MARKET SHORT"),
                 slug_id,
                 theme_index=posted_today
             )
@@ -1224,7 +1326,7 @@ def main():
             print(f"   ❌ Skipped article: {e}")
             continue
 
-    print(f"\n🎉 Run finished! આજે ({today_key}) કુલ {published_count} અલગ-અલગ વેબસાઈટની નવી પોસ્ટ પબ્લિશ થઈ (આજની કુલ: {posted_today}).")
+    print(f"\n🎉 Run finished! આજે ({today_key}) કુલ {published_count} અલગ-અલગ વેબસાઈટની નવી Short Story પબ્લિશ થઈ (આજની કુલ: {posted_today}).")
 
 
 if __name__ == "__main__":
