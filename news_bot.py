@@ -117,7 +117,6 @@ NEWS_FEEDS = [
     ("NYTimes Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", True),
 ]
 
-# Clean 3 Languages (GU + EN + HI) — Fast Indexing & Zero Mixed-Script Glitches
 TARGET_LANGUAGES = [
     ("gu", "ગુજરાતી", "Gujarati"),
     ("hi", "हिन्दी", "Hindi"),
@@ -189,15 +188,30 @@ def get_ist_now():
     return datetime.now(IST_TZ)
 
 
+def fix_indic_spacing(text):
+    """Adds missing space between Gujarati/Hindi words and English letters."""
+    text = re.sub(r"([\u0900-\u097F\u0A80-\u0AFF])([A-Za-z])", r"\1 \2", text)
+    text = re.sub(r"([A-Za-z])([\u0900-\u097F\u0A80-\u0AFF])", r"\1 \2", text)
+    return text
+
+
 def clean_str_unescape(obj):
-    """Unescape HTML entities (e.g. &#8377; -> ₹) and convert Indic digits to 0-9."""
+    """Unescape HTML entities (e.g. &#8377; -> ₹), fix spacing, and convert Indic digits to 0-9."""
     if isinstance(obj, str):
-        return html.unescape(obj).translate(INDIC_DIGIT_TRANS).strip()
+        cleaned = html.unescape(obj).translate(INDIC_DIGIT_TRANS).strip()
+        return fix_indic_spacing(cleaned)
     if isinstance(obj, list):
         return [clean_str_unescape(item) for item in obj]
     if isinstance(obj, dict):
         return {k: clean_str_unescape(v) for k, v in obj.items()}
     return obj
+
+
+def schema_safe_text(text):
+    """Replaces ₹ with Rs. inside JSON-LD so Blogger never converts it to &#8377;."""
+    s = clean_str_unescape(str(text or ""))
+    s = re.sub(r"₹\s*", "Rs. ", s)
+    return " ".join(s.split())
 
 
 def map_to_approved_labels(title, raw_tags=None, max_labels=3):
@@ -284,7 +298,7 @@ def ensure_unique_seo_title(proposed_title, existing_titles, primary_topic=""):
     if not clashes(proposed_title):
         return proposed_title
 
-    print(f"   🔄 સરખું ટાઇટલ મળ્યું -> નવું યુનિક ટાઇટલ બની રહ્યું છે...")
+    print("   🔄 સરખું ટાઇટલ મળ્યું -> નવું યુનિક ટાઇટલ બની રહ્યું છે...")
     today_tag = get_ist_now().strftime("%d %b %Y")
     recent_block = "\n".join(f"- {t}" for t in existing_titles[:15])
     try:
@@ -715,7 +729,7 @@ Return ONLY valid JSON:
   "stock_and_company_names": ["Exact English Company/Stock Name 1"],
   "thumbnail_headline": "Punchy 4-6 word English headline for thumbnail",
   "category_badge": "2-3 word English badge",
-  "meta_description": "Crisp 140-150 char English meta description with focus keyword",
+  "meta_description": "Crisp 140-148 char English meta description with focus keyword",
   "categories": ["MARKET NEWS"],
   "quick_table": [{{"label": "Key Parameter", "value": "Exact Value"}}],
   "intro": "2 short punchy opening paragraphs.",
@@ -809,8 +823,8 @@ def translate_article_to_language(verified_en, lang_name):
 Translate this financial SHORT STORY JSON into natural, fluent, contemporary {lang_name} used by Indian stock market readers.
 
 STRICT RULES (MUST FOLLOW 100%):
-1. TRANSLATE EVERY HEADING, TABLE LABEL, FAQ QUESTION, FAQ ANSWER, AND PARAGRAPH into pure {lang_name} script. Do NOT leave section headings or FAQ questions untranslated in English!
-2. ZERO MIXED-SCRIPT TYPOS: Use ONLY {lang_name} script (plus English Latin letters for company/stock names and 0-9 digits). Never mix characters from any other Indian language script.
+1. TRANSLATE EVERY HEADING, TABLE LABEL, FAQ QUESTION, FAQ ANSWER, AND PARAGRAPH into pure {lang_name} script. Do NOT leave section headings or FAQ questions untranslated in English.
+2. ZERO MIXED-SCRIPT TYPOS: When writing Gujarati, NEVER use any Devanagari/Hindi characters (e.g. write તેજી, never तेजी). When writing Hindi, NEVER use any Gujarati characters. Always keep a clean space between {lang_name} words and English words.
 3. NUMBERS MUST STAY IN ENGLISH DIGITS (0-9): e.g., ₹1,250, 15.4%, 2026, Q2, FY27. Never use native digits.
 4. COMPANY, STOCK & FINANCIAL NAMES IN ENGLISH: Keep company names, indices, and tickers in English (e.g., Tata Motors, HDFC Bank, Nifty 50, Sensex, BSE, NSE, RBI, SEBI, IPO, EBITDA, EPS, PAT, {keep_names}).
 5. Preserve the exact JSON keys and structure.
@@ -820,7 +834,7 @@ INPUT JSON:
 
 Return ONLY valid JSON.
 """
-    translated = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.3)
+    translated = call_gemini(prompt, expect_json=True, max_tokens=3072, temperature=0.25)
     if not translated.get("sections") or len(translated["sections"]) < len(verified_en["sections"]):
         raise ValueError(f"{lang_name} translation incomplete.")
 
@@ -1178,15 +1192,15 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
     uid = hashlib.md5(final_title.encode("utf-8")).hexdigest()[:8]
 
     meta_desc = clean_str_unescape(verified_en.get("meta_description") or final_title)
-    if len(meta_desc) > 152:
-        meta_desc = meta_desc[:149].rsplit(" ", 1)[0] + "..."
+    if len(meta_desc) > 148:
+        meta_desc = meta_desc[:145].rsplit(" ", 1)[0] + "..."
 
     schema_bundle = [
         {
             "@context": "https://schema.org",
             "@type": "NewsArticle",
-            "headline": clean_str_unescape(final_title),
-            "description": meta_desc,
+            "headline": schema_safe_text(final_title),
+            "description": schema_safe_text(meta_desc),
             "image": [thumb_url] if thumb_url else [],
             "datePublished": iso_str,
             "dateModified": iso_str,
@@ -1199,8 +1213,8 @@ def build_complete_post_html(verified_en, translations, thumb_url, related_posts
             "mainEntity": [
                 {
                     "@type": "Question",
-                    "name": clean_str_unescape(f.get("q", "")),
-                    "acceptedAnswer": {"@type": "Answer", "text": clean_str_unescape(f.get("a", ""))},
+                    "name": schema_safe_text(f.get("q", "")),
+                    "acceptedAnswer": {"@type": "Answer", "text": schema_safe_text(f.get("a", ""))},
                 }
                 for f in verified_en.get("faqs", [])
             ],
@@ -1393,7 +1407,6 @@ def main():
             verified_en = pass3_copyright_humanizer_with_autoheal(draft_en, art)
             time.sleep(2)
 
-            # Auto-ensure unique headline against all recent blog posts
             final_title = ensure_unique_seo_title(
                 verified_en["seo_title"],
                 live_blog_titles + history["posted_titles"][-50:],
@@ -1430,7 +1443,6 @@ def main():
                 theme_index=posted_today,
             )
 
-            # Strictly map to ONLY the 8 approved categories
             approved_labels = map_to_approved_labels(
                 final_title,
                 raw_tags=verified_en.get("categories") or verified_en.get("tags") or [],
